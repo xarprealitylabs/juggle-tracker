@@ -285,7 +285,8 @@ const S = {
   animFrame: null,
   // Per-player tracking
   lastCount: 0,       // display count for current player (resets per player)
-  p2BaseCount: 0,     // server count when Player 2 started (for delta)
+  lastBallX: null,    // last known normalised ball position from server
+  lastBallY: null,
   // Recording
   mediaRecorder: null,
   recordedChunks: [],
@@ -342,14 +343,20 @@ function openWS() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(WS_URL);
     ws.binaryType = 'arraybuffer';
-    ws.onopen    = () => { S.ws = ws; resolve(); };
-    ws.onerror   = ()  => reject(new Error('WS error'));
-    ws.onmessage = onServerMessage;
-    ws.onclose   = () => {
-      if (S.sessionActive) {
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+      S.ws = ws;
+      resolve();
+    };
+    ws.onerror = () => { if (!opened) reject(new Error('WS error')); };
+    ws.onclose = () => {
+      if (!opened) reject(new Error('WS closed before open'));
+      else if (S.sessionActive) {
         document.getElementById('ws-status').textContent = '🔴 desligado';
       }
     };
+    ws.onmessage = onServerMessage;
   });
 }
 
@@ -367,10 +374,12 @@ function startPlayer() {
   // For Player 2: reconnect WS so server gets a fresh JuggleSession
   if (S.currentPlayer === 2) {
     if (S.ws) { S.ws.close(); S.ws = null; }
-    openWS().catch(() => {
-      alert('Erro ao reiniciar sessão. Tenta de novo.');
-      show('handoff');
-    }).then(() => _beginPlayerSession());
+    openWS()
+      .then(() => _beginPlayerSession())
+      .catch(() => {
+        alert('Erro ao reiniciar sessão. Tenta de novo.');
+        show('handoff');
+      });
     return;
   }
 
@@ -380,6 +389,8 @@ function startPlayer() {
 function _beginPlayerSession() {
   S.scores[S.currentPlayer - 1] = 0;
   S.lastCount = 0;
+  S.lastBallX = null;
+  S.lastBallY = null;
   S.sessionActive = true;
   document.getElementById('score-display').textContent = '0';
   document.getElementById('current-player-tag').textContent = `Jogador ${S.currentPlayer}`;
@@ -416,6 +427,23 @@ function frameLoop() {
 
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+  // Draw last known ball position on every frame (avoids flicker from async response)
+  if (S.lastBallX !== null) {
+    const cx = Math.round(S.lastBallX * canvas.width);
+    const cy = Math.round(S.lastBallY * canvas.height);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 32, 0, Math.PI * 2);
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(74,222,128,0.15)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#4ade80';
+    ctx.fill();
+  }
+
   if (!sending && S.ws && S.ws.readyState === WebSocket.OPEN) {
     sending = true;
     offCtx.drawImage(video, 0, 0, 320, 240);
@@ -439,26 +467,13 @@ function onServerMessage(evt) {
   let data;
   try { data = JSON.parse(evt.data); } catch { return; }
 
-  const canvas = document.getElementById('canvas-overlay');
-  const ctx    = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-
   if (data.bx !== null && data.bx !== undefined) {
-    const cx = Math.round(data.bx * W);
-    const cy = Math.round(data.by * H);
-    ctx.beginPath();
-    ctx.arc(cx, cy, 32, 0, Math.PI * 2);
-    ctx.strokeStyle = '#4ade80';
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(74,222,128,0.15)';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-    ctx.fillStyle = '#4ade80';
-    ctx.fill();
+    S.lastBallX = data.bx;
+    S.lastBallY = data.by;
     document.getElementById('ws-status').textContent = '🟢 IA';
   } else {
+    S.lastBallX = null;
+    S.lastBallY = null;
     document.getElementById('ws-status').textContent = '🟡 sem bola';
   }
 
