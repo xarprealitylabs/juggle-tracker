@@ -590,10 +590,28 @@ function goUpload() {
 function onFileChosen(input) {
   const file = input.files[0];
   if (!file) return;
-  S.uploadFile = file;
-  document.getElementById('upload-filename').textContent = file.name;
-  document.getElementById('btn-process').disabled = false;
-  document.getElementById('btn-process').style.opacity = '1';
+
+  // Check duration before accepting the file
+  const url = URL.createObjectURL(file);
+  const vid = document.createElement('video');
+  vid.preload = 'metadata';
+  vid.onloadedmetadata = () => {
+    URL.revokeObjectURL(url);
+    if (vid.duration > 30) {
+      document.getElementById('upload-filename').textContent =
+        `⚠️ Vídeo demasiado longo (${Math.round(vid.duration)}s). Máximo: 30s.`;
+      document.getElementById('btn-process').disabled = true;
+      document.getElementById('btn-process').style.opacity = '0.4';
+      S.uploadFile = null;
+      return;
+    }
+    S.uploadFile = file;
+    document.getElementById('upload-filename').textContent =
+      `${file.name} (${Math.round(vid.duration)}s)`;
+    document.getElementById('btn-process').disabled = false;
+    document.getElementById('btn-process').style.opacity = '1';
+  };
+  vid.src = url;
 }
 
 async function processUpload() {
@@ -616,25 +634,27 @@ async function processUpload() {
     clearInterval(ticker);
     bar.style.width = '100%';
 
-    if (!resp.ok) throw new Error('Server error');
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Erro do servidor (${resp.status})`);
+    }
 
+    const juggleCount = resp.headers.get('X-Juggle-Count');
     const annotated = await resp.blob();
     S.annotatedBlob = annotated;
-
-    // Try to get juggle count from the blob metadata — we can't easily,
-    // so ask the user to look at the video. Show download/share immediately.
-    // TODO: server could return count in header
-    showUploadResult();
+    showUploadResult(juggleCount ? parseInt(juggleCount) : null);
   } catch (e) {
     clearInterval(ticker);
-    alert('Erro ao processar o vídeo. Tenta de novo.');
+    alert(e.message || 'Erro ao processar o vídeo. Tenta de novo.');
     show('upload');
   }
 }
 
-function showUploadResult() {
+function showUploadResult(count) {
   document.getElementById('upload-result-title').textContent = 'Análise completa!';
-  document.getElementById('upload-result-score').textContent = '🎬';
+  document.getElementById('upload-result-score').textContent = count !== null ? count : '🎬';
+  document.querySelector('#screen-upload-result p').textContent =
+    count !== null ? 'keepups detectados' : 'vídeo anotado pronto';
   show('upload-result');
 }
 

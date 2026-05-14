@@ -157,11 +157,21 @@ async def ws_endpoint(ws: WebSocket):
         log.exception("WS error: %s", e)
 
 
-def _annotate_video_sync(in_path: str, out_path: str):
+MAX_DURATION_S = 30
+
+
+def _annotate_video_sync(in_path: str, out_path: str) -> int:
+    """Returns final juggle count."""
+    t0 = time.monotonic()
     cap = cv2.VideoCapture(in_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
-    w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps        = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    w          = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h          = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    n_frames   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration_s = n_frames / fps
+
+    log.info("annotate: %.1fs video — %d frames @ %.1ffps (%dx%d)",
+             duration_s, n_frames, fps, w, h)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
@@ -170,7 +180,7 @@ def _annotate_video_sync(in_path: str, out_path: str):
     session = JuggleSession()
     frame_idx = 0
     last_result: dict = {"bx": None, "by": None, "count": 0}
-    STEP = 2  # process every Nth frame — halves inference time, detection still reliable
+    STEP = 2  # process every Nth frame — halves inference time
 
     while True:
         ret, frame = cap.read()
@@ -190,30 +200,61 @@ def _annotate_video_sync(in_path: str, out_path: str):
         writer.write(frame)
         frame_idx += 1
 
+        if frame_idx % 50 == 0:
+            pct = int(frame_idx / max(n_frames, 1) * 100)
+            log.info("annotate: %d%% (%d/%d frames)", pct, frame_idx, n_frames)
+
     cap.release()
     writer.release()
     os.unlink(in_path)
+
+    elapsed = time.monotonic() - t0
+    final_count = result["count"]
+    log.info("annotate: done in %.1fs — %d juggles detected", elapsed, final_count)
+    return final_count
 
 
 @app.post("/annotate")
 async def annotate_video(file: UploadFile = File(...)):
     raw = await file.read()
+    size_mb = len(raw) / 1_000_000
+    log.info("annotate: received upload %.1f MB (%s)", size_mb, file.filename)
 
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+    # Write to temp file so OpenCV can open it
+    suffix = os.path.splitext(file.filename or ".webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
         f.write(raw)
         in_path = f.name
 
-    out_path = in_path[:-5] + "_annotated.mp4"
+    # Check duration before running expensive inference
+    cap = cv2.VideoCapture(in_path)
+    fps      = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    duration_s = n_frames / fps
+
+    if duration_s > MAX_DURATION_S:
+        os.unlink(in_path)
+        log.warning("annotate: rejected — video too long (%.1fs > %ds)", duration_s, MAX_DURATION_S)
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail=f"Vídeo demasiado longo ({duration_s:.0f}s). Máximo: {MAX_DURATION_S}s."
+        )
+
+    out_path = in_path[:-len(suffix)] + "_annotated.mp4"
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _annotate_video_sync, in_path, out_path)
+    final_count = await loop.run_in_executor(None, _annotate_video_sync, in_path, out_path)
 
-    return FileResponse(
+    response = FileResponse(
         out_path,
         media_type="video/mp4",
         filename="juggle_annotated.mp4",
         background=BackgroundTask(os.unlink, out_path),
     )
+    response.headers["X-Juggle-Count"] = str(final_count)
+    return response
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
