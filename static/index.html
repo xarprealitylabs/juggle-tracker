@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>⚽ Juggle Challenge</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a1f0a; color: #fff;
+    font-family: 'Arial Black', Arial, sans-serif;
+    height: 100dvh; overflow: hidden;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  #app { width: 100%; max-width: 480px; height: 100dvh; position: relative; }
+
+  .screen {
+    display: none; width: 100%; height: 100%;
+    flex-direction: column; align-items: center;
+    justify-content: center; padding: 24px; text-align: center;
+  }
+  .screen.active { display: flex; }
+
+  /* HOME */
+  #screen-home {
+    background: radial-gradient(ellipse at center, #1a4a1a 0%, #0a1f0a 70%); gap: 24px;
+  }
+  .pitch-lines {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-size: 40px 40px; pointer-events: none;
+  }
+  .ball-icon { font-size: 72px; animation: bounce 1.2s infinite ease-in-out; }
+  @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-16px)} }
+  h1 { font-size: 32px; text-transform: uppercase; letter-spacing: 2px; color: #4ade80; }
+  .subtitle { font-size: 15px; color: #86efac; opacity: 0.8; }
+  .btn {
+    background: #16a34a; color: #fff; border: none; border-radius: 12px;
+    padding: 16px 40px; font-size: 20px; font-family: inherit; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
+    width: 100%; max-width: 280px;
+    transition: background 0.15s, transform 0.1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { background: #15803d; transform: scale(0.97); }
+  .btn.secondary {
+    background: transparent; border: 2px solid #4ade80; color: #4ade80;
+    font-size: 15px; padding: 12px 32px; margin-top: -8px;
+  }
+  .notice { font-size: 12px; color: #4ade80; opacity: 0.5; }
+
+  /* CONNECTING */
+  #screen-connecting { gap: 20px; background: #0a1f0a; }
+  .spinner {
+    width: 48px; height: 48px; border: 4px solid rgba(74,222,128,0.2);
+    border-top-color: #4ade80; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* SETUP */
+  #screen-setup { gap: 20px; background: #0a1f0a; }
+  #screen-setup h2 { font-size: 24px; color: #4ade80; }
+  .player-badge {
+    font-size: 48px; width: 80px; height: 80px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: #1a4a1a; border: 3px solid #16a34a;
+  }
+
+  /* GAME */
+  #screen-game { padding: 0; position: relative; background: #000; }
+  #camera { width: 100%; height: 100%; object-fit: cover; }
+  #canvas-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .game-hud {
+    position: absolute; top: 0; left: 0; right: 0; padding: 16px 20px;
+    display: flex; justify-content: space-between; align-items: center;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+  }
+  .player-tag { font-size: 14px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; color: #4ade80; }
+  #score-display {
+    font-size: 64px; font-weight: 900; color: #fff;
+    text-shadow: 0 0 20px #4ade80, 0 2px 8px rgba(0,0,0,0.8); line-height: 1;
+  }
+  .score-label { font-size: 11px; color: #86efac; letter-spacing: 2px; text-transform: uppercase; }
+  .detect-badge {
+    position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+    background: rgba(22,163,74,0.85); border-radius: 20px;
+    padding: 6px 18px; font-size: 13px; font-weight: 700; letter-spacing: 1px;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  .detect-badge.visible { opacity: 1; }
+  .btn-stop {
+    position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+    background: rgba(220,38,38,0.85); color: #fff; border: none; border-radius: 50px;
+    padding: 14px 36px; font-size: 16px; font-family: inherit; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .ws-status {
+    position: absolute; top: 80px; right: 12px;
+    font-size: 11px; color: rgba(255,255,255,0.5);
+    background: rgba(0,0,0,0.4); border-radius: 8px; padding: 4px 8px;
+  }
+
+  /* HANDOFF */
+  #screen-handoff { gap: 20px; background: radial-gradient(ellipse, #1a4a1a, #0a1f0a); }
+  #handoff-score { font-size: 80px; font-weight: 900; color: #4ade80; }
+  #screen-handoff h2 { font-size: 22px; color: #fff; }
+  #screen-handoff p { color: #86efac; font-size: 15px; }
+
+  /* RESULT */
+  #screen-result { gap: 20px; background: radial-gradient(ellipse, #1a3a1a, #0a1f0a); }
+  .winner-crown { font-size: 56px; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
+  #result-title { font-size: 28px; color: #fbbf24; text-transform: uppercase; letter-spacing: 2px; }
+  .score-cards { display: flex; gap: 16px; width: 100%; max-width: 340px; }
+  .score-card {
+    flex: 1; background: rgba(255,255,255,0.06);
+    border-radius: 16px; padding: 16px; border: 2px solid transparent;
+  }
+  .score-card.winner { border-color: #fbbf24; background: rgba(251,191,36,0.1); }
+  .score-card .p-name { font-size: 12px; color: #86efac; text-transform: uppercase; letter-spacing: 1px; }
+  .score-card .p-score { font-size: 48px; font-weight: 900; }
+  .score-card.winner .p-score { color: #fbbf24; }
+  .btn-row { display: flex; gap: 12px; width: 100%; max-width: 340px; }
+  .btn-row .btn { flex: 1; font-size: 15px; padding: 14px 8px; }
+  #btn-download { background: #1d4ed8; }
+  #btn-share    { background: #0891b2; }
+  .uploading-msg { font-size: 13px; color: #86efac; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- HOME -->
+  <div id="screen-home" class="screen active">
+    <div class="pitch-lines"></div>
+    <div class="ball-icon">⚽</div>
+    <h1>Juggle<br>Challenge</h1>
+    <p class="subtitle">Quem faz mais keepups?</p>
+    <button class="btn" onclick="startChallenge()">Jogar</button>
+    <button class="btn secondary" onclick="startSolo()">Modo Solo</button>
+    <p class="notice">Detecção por IA — câmara traseira</p>
+  </div>
+
+  <!-- CONNECTING -->
+  <div id="screen-connecting" class="screen">
+    <div class="spinner"></div>
+    <p style="color:#86efac">A ligar ao servidor...</p>
+  </div>
+
+  <!-- PLAYER SETUP -->
+  <div id="screen-setup" class="screen">
+    <div class="player-badge" id="setup-badge">1️⃣</div>
+    <h2 id="setup-title">Jogador 1</h2>
+    <p style="color:#86efac;font-size:14px">Posiciona-te e prepara-te</p>
+    <button class="btn" onclick="startPlayer()">GO ⚽</button>
+  </div>
+
+  <!-- GAME -->
+  <div id="screen-game" class="screen">
+    <video id="camera" autoplay playsinline muted></video>
+    <canvas id="canvas-overlay"></canvas>
+    <div class="game-hud">
+      <div>
+        <div class="player-tag" id="current-player-tag">Jogador 1</div>
+        <div class="score-label">KEEPUPS</div>
+      </div>
+      <div id="score-display">0</div>
+    </div>
+    <div class="detect-badge" id="detect-badge">⚽ +1</div>
+    <div class="ws-status" id="ws-status">🔍</div>
+    <button class="btn-stop" onclick="stopPlayer()">PARAR</button>
+  </div>
+
+  <!-- HANDOFF -->
+  <div id="screen-handoff" class="screen">
+    <div style="font-size:28px">⚽ Jogador 1</div>
+    <div id="handoff-score">0</div>
+    <h2>Agora é a vez do</h2>
+    <div style="font-size:24px;color:#4ade80;font-weight:900">Jogador 2</div>
+    <p>Passa o telemóvel</p>
+    <button class="btn" onclick="setupPlayer(2)">Pronto ✊</button>
+  </div>
+
+  <!-- RESULT -->
+  <div id="screen-result" class="screen">
+    <div class="winner-crown">🏆</div>
+    <div id="result-title">Vencedor!</div>
+    <div class="score-cards">
+      <div class="score-card" id="card-p1">
+        <div class="p-name">Jogador 1</div>
+        <div class="p-score" id="result-p1">0</div>
+      </div>
+      <div class="score-card" id="card-p2">
+        <div class="p-name">Jogador 2</div>
+        <div class="p-score" id="result-p2">0</div>
+      </div>
+    </div>
+    <p class="uploading-msg" id="uploading-msg" style="display:none">A gerar vídeo anotado...</p>
+    <div class="btn-row" id="result-btns" style="display:none">
+      <button class="btn" id="btn-download" onclick="downloadClip()">💾 Clip</button>
+      <button class="btn" id="btn-share"    onclick="shareClip()">📤 Share</button>
+    </div>
+    <button class="btn secondary" onclick="resetGame()">Jogar de novo</button>
+  </div>
+
+</div>
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+const S = {
+  mode: '2p',
+  currentPlayer: 1,
+  scores: [0, 0],
+  stream: null,
+  ws: null,
+  sessionActive: false,
+  animFrame: null,
+  lastCount: 0,
+  // Recording
+  mediaRecorder: null,
+  recordedChunks: [],
+  lastBlob: null,
+  annotatedBlob: null,
+};
+
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+// ─── SCREENS ─────────────────────────────────────────────────────────────────
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + id).classList.add('active');
+}
+
+function startChallenge() { S.mode = '2p'; init(); }
+function startSolo()      { S.mode = 'solo'; init(); }
+
+// ─── INIT — camera + websocket ────────────────────────────────────────────────
+async function init() {
+  show('connecting');
+  try {
+    S.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+  } catch (e) {
+    alert('Câmara necessária: ' + e.message);
+    show('home');
+    return;
+  }
+
+  try {
+    await connectWS();
+  } catch (e) {
+    alert('Não foi possível ligar ao servidor. Verifica a ligação.');
+    show('home');
+    return;
+  }
+
+  setupPlayer(1);
+}
+
+function connectWS() {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { S.ws = ws; resolve(); };
+    ws.onerror = () => reject(new Error('WS error'));
+    ws.onmessage = onServerMessage;
+    ws.onclose = () => {
+      if (S.sessionActive) {
+        document.getElementById('ws-status').textContent = '🔴 desligado';
+      }
+    };
+  });
+}
+
+// ─── PLAYER SETUP ────────────────────────────────────────────────────────────
+function setupPlayer(n) {
+  S.currentPlayer = n;
+  document.getElementById('setup-badge').textContent = n === 1 ? '1️⃣' : '2️⃣';
+  document.getElementById('setup-title').textContent = `Jogador ${n}`;
+  show('setup');
+}
+
+function startPlayer() {
+  S.scores[S.currentPlayer - 1] = 0;
+  S.lastCount = 0;
+  S.sessionActive = true;
+  document.getElementById('score-display').textContent = '0';
+  document.getElementById('current-player-tag').textContent = `Jogador ${S.currentPlayer}`;
+
+  const video  = document.getElementById('camera');
+  const canvas = document.getElementById('canvas-overlay');
+  video.srcObject = S.stream;
+
+  const ready = () => {
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    startRecording();
+    frameLoop();
+  };
+  video.onloadedmetadata = ready;
+  if (video.readyState >= 2) ready();
+
+  show('game');
+}
+
+// ─── FRAME LOOP — capture → WS → overlay ─────────────────────────────────────
+let sending = false;
+
+function frameLoop() {
+  if (!S.sessionActive) return;
+  S.animFrame = requestAnimationFrame(frameLoop);
+
+  const video  = document.getElementById('camera');
+  const canvas = document.getElementById('canvas-overlay');
+  const ctx    = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  ctx.drawImage(video, 0, 0, W, H);
+
+  // Send frame to server at ~15fps (skip if still waiting for response)
+  if (!sending && S.ws && S.ws.readyState === WebSocket.OPEN) {
+    sending = true;
+    // Capture at reduced size for speed
+    const offscreen = document.createElement('canvas');
+    offscreen.width = 320; offscreen.height = 240;
+    offscreen.getContext('2d').drawImage(video, 0, 0, 320, 240);
+    offscreen.toBlob(blob => {
+      blob.arrayBuffer().then(buf => {
+        if (S.ws && S.ws.readyState === WebSocket.OPEN) {
+          S.ws.send(buf);
+        }
+        // Rate-limit to ~15fps
+        setTimeout(() => { sending = false; }, 67);
+      });
+    }, 'image/jpeg', 0.7);
+  }
+}
+
+// ─── SERVER RESPONSE ──────────────────────────────────────────────────────────
+function onServerMessage(evt) {
+  let data;
+  try { data = JSON.parse(evt.data); } catch { return; }
+
+  const canvas = document.getElementById('canvas-overlay');
+  const ctx    = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // Draw ball overlay
+  if (data.bx !== null && data.bx !== undefined) {
+    const cx = Math.round(data.bx * W);
+    const cy = Math.round(data.by * H);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 32, 0, Math.PI * 2);
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(74,222,128,0.15)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#4ade80';
+    ctx.fill();
+    document.getElementById('ws-status').textContent = '🟢 IA';
+  } else {
+    document.getElementById('ws-status').textContent = '🟡 sem bola';
+  }
+
+  // Update score
+  if (data.count > S.lastCount) {
+    S.lastCount = data.count;
+    S.scores[S.currentPlayer - 1] = data.count;
+    document.getElementById('score-display').textContent = data.count;
+    flashDetect();
+  }
+}
+
+// ─── SESSION END ──────────────────────────────────────────────────────────────
+function stopPlayer() {
+  S.sessionActive = false;
+  cancelAnimationFrame(S.animFrame);
+  stopRecording();
+
+  if (S.mode === 'solo' || S.currentPlayer === 2) {
+    showResult();
+  } else {
+    document.getElementById('handoff-score').textContent = S.scores[0];
+    show('handoff');
+  }
+}
+
+// ─── RECORDING ───────────────────────────────────────────────────────────────
+function startRecording() {
+  S.recordedChunks = [];
+  S.lastBlob = null;
+  S.annotatedBlob = null;
+  const canvas = document.getElementById('canvas-overlay');
+  const cs = canvas.captureStream(30);
+  const opts = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? { mimeType: 'video/webm;codecs=vp9' }
+    : MediaRecorder.isTypeSupported('video/webm') ? { mimeType: 'video/webm' } : {};
+  S.mediaRecorder = new MediaRecorder(cs, opts);
+  S.mediaRecorder.ondataavailable = e => { if (e.data.size > 0) S.recordedChunks.push(e.data); };
+  S.mediaRecorder.onstop = () => {
+    S.lastBlob = new Blob(S.recordedChunks, { type: S.mediaRecorder.mimeType || 'video/webm' });
+    uploadForAnnotation();
+  };
+  S.mediaRecorder.start(100);
+}
+
+function stopRecording() {
+  if (S.mediaRecorder && S.mediaRecorder.state !== 'inactive') S.mediaRecorder.stop();
+}
+
+async function uploadForAnnotation() {
+  if (!S.lastBlob) return;
+  const msg = document.getElementById('uploading-msg');
+  const btns = document.getElementById('result-btns');
+  msg.style.display = 'block';
+  btns.style.display = 'none';
+
+  try {
+    const fd = new FormData();
+    fd.append('file', S.lastBlob, 'session.webm');
+    const resp = await fetch('/annotate', { method: 'POST', body: fd });
+    if (resp.ok) {
+      S.annotatedBlob = await resp.blob();
+    }
+  } catch (e) {
+    // Fall back to raw recording
+    S.annotatedBlob = S.lastBlob;
+  }
+
+  msg.style.display = 'none';
+  btns.style.display = 'flex';
+}
+
+// ─── RESULT ───────────────────────────────────────────────────────────────────
+function showResult() {
+  const [s1, s2] = S.scores;
+  document.getElementById('result-p1').textContent = s1;
+  document.getElementById('result-p2').textContent = S.mode === 'solo' ? '—' : s2;
+
+  let title, winner;
+  if (S.mode === 'solo')    { title = `${s1} keepups! ⚽`; winner = 1; }
+  else if (s1 > s2)         { title = 'Jogador 1 ganhou!'; winner = 1; }
+  else if (s2 > s1)         { title = 'Jogador 2 ganhou!'; winner = 2; }
+  else                      { title = 'Empate! 🤝'; winner = 0; }
+
+  document.getElementById('result-title').textContent = title;
+  document.getElementById('card-p1').classList.toggle('winner', winner === 1);
+  document.getElementById('card-p2').classList.toggle('winner', winner === 2);
+  if (S.mode === 'solo') document.getElementById('card-p2').style.display = 'none';
+  document.getElementById('result-btns').style.display = 'none';
+  document.getElementById('uploading-msg').style.display = 'block';
+  show('result');
+}
+
+function downloadClip() {
+  const blob = S.annotatedBlob || S.lastBlob;
+  if (!blob) { alert('Clip ainda a processar…'); return; }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `juggle-${Date.now()}.mp4`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function shareClip() {
+  const blob = S.annotatedBlob || S.lastBlob;
+  if (!blob) { alert('Clip ainda a processar…'); return; }
+  const file = new File([blob], 'juggle.mp4', { type: blob.type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    await navigator.share({ files: [file], title: 'Juggle Challenge ⚽',
+                            text: `${S.scores[S.currentPlayer - 1]} keepups!` });
+  } else { downloadClip(); }
+}
+
+function resetGame() {
+  S.scores = [0, 0]; S.lastBlob = null; S.annotatedBlob = null; S.lastCount = 0;
+  document.getElementById('card-p2').style.display = '';
+  if (S.ws) { S.ws.close(); S.ws = null; }
+  show('home');
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function flashDetect() {
+  const el = document.getElementById('detect-badge');
+  el.classList.add('visible');
+  setTimeout(() => el.classList.remove('visible'), 400);
+}
+</script>
+</body>
+</html>

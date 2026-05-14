@@ -1,0 +1,4 @@
+# Replace juggle.SEU-DOMINIO.com with your actual domain/subdomain
+juggle.SEU-DOMINIO.com {
+    reverse_proxy app:8000
+}
