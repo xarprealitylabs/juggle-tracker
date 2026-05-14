@@ -129,6 +129,10 @@ async def ws_endpoint(ws: WebSocket):
         while True:
             msg = await ws.receive()
 
+            # Clean disconnect
+            if msg.get("type") == "websocket.disconnect":
+                break
+
             # Text messages are control signals
             if msg.get("text") == "RESET":
                 session = JuggleSession()
@@ -165,13 +169,17 @@ def _annotate_video_sync(in_path: str, out_path: str):
 
     session = JuggleSession()
     frame_idx = 0
+    last_result: dict = {"bx": None, "by": None, "count": 0}
+    STEP = 2  # process every Nth frame — halves inference time, detection still reliable
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        t = frame_idx / fps  # use video time, not wall clock
-        result = session.process_frame(frame, t=t)
+        t = frame_idx / fps
+        if frame_idx % STEP == 0:
+            last_result = session.process_frame(frame, t=t)
+        result = last_result
         if result["bx"] is not None:
             cx = int(result["bx"] * w)
             cy = int(result["by"] * h)
