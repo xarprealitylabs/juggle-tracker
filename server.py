@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 app = FastAPI()
 
 BALL_CLASS  = 32
-CONF_THRESH = 0.12  # lower threshold catches ball near foot (occlusion)
+CONF_THRESH = 0.10  # tuned: conf=0.10 + span5 gives count=20/22 (err=2) on ground-truth video
 
 # Single model, serialised across threads with a lock
 _model = YOLO("yolov8n.pt")
@@ -59,9 +59,10 @@ class KalmanBallTracker:
 
 
 class JuggleSession:
-    WINDOW        = 30    # rolling window in frames
-    MIN_DELTA_PCT = 0.010 # tuned against ground truth: 22 juggles in 15s test video
-    COOLDOWN      = 0.20  # 200ms min between juggles (handles up to ~5/s)
+    WINDOW    = 30    # rolling window in frames
+    SPAN      = 5     # span-based detection: compare Y against ±SPAN frames
+    MIN_PROM  = 0.06  # minimum prominence (6% of frame height) — tuned: count=20/22
+    COOLDOWN  = 0.20  # 200ms min between juggles
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
@@ -106,46 +107,31 @@ class JuggleSession:
             "count": self.count,
         }
 
-    # Max gap between consecutive history points to trust for adjacent comparison
-    MAX_ADJ_GAP = 0.15  # 150ms
-
     def _detect_juggle(self):
-        """Two complementary signals:
-        1. Adjacent local max: ball Y peaks between two nearby-in-time points.
-        2. Gap reversal: ball descending before a gap, ascending after = contact during gap.
+        """Span-based local Y-maximum detection.
+
+        Compare ball Y at position (n - SPAN - 1) against SPAN frames before and after.
+        A local max in Y = ball at lowest point = just been kicked = juggle.
+        Detection lags by SPAN frames (~167ms at 30fps) — acceptable for a counter.
         """
         n = len(self.history)
-        if n < 3:
+        if n < 2 * self.SPAN + 1:
             return
 
-        ys = [p[1] for p in self.history]
-        ts = [p[2] for p in self.history]
-        i = n - 2
+        i = n - self.SPAN - 1  # candidate: SPAN frames before the latest
 
-        gap_before = ts[i] - ts[i - 1]
-        gap_after  = ts[i + 1] - ts[i]
+        _, y_i,      t_i      = self.history[i]
+        _, y_before, t_before = self.history[i - self.SPAN]
+        _, y_after,  t_after  = self.history[i + self.SPAN]  # = history[n-1]
 
-        # Signal 1: adjacent local max (direct contact detection, no gap)
-        if gap_before <= self.MAX_ADJ_GAP and gap_after <= self.MAX_ADJ_GAP:
-            if (ys[i] - ys[i-1] > self.MIN_DELTA_PCT and
-                    ys[i] - ys[i+1] > self.MIN_DELTA_PCT):
-                if ts[i] - self.last_juggle_t >= self.COOLDOWN:
-                    self.count += 1
-                    self.last_juggle_t = ts[i]
-                    return
+        # Reject if time spans imply a long detection gap (ball was lost)
+        if t_i - t_before > 1.0 or t_after - t_i > 1.0:
+            return
 
-        # Signal 2: direction reversal across a detection gap
-        # Gap between 80ms and 600ms suggests ball was briefly undetected at contact
-        if 0.08 < gap_before < 0.60 and n >= 4:
-            prev_gap = ts[i - 1] - ts[i - 2]
-            if prev_gap <= self.MAX_ADJ_GAP and gap_after <= self.MAX_ADJ_GAP:
-                vel_before = ys[i - 1] - ys[i - 2]  # positive = ball descending
-                vel_after  = ys[i + 1] - ys[i]       # negative = ball ascending
-                if vel_before > self.MIN_DELTA_PCT and vel_after < -self.MIN_DELTA_PCT:
-                    t_contact = (ts[i - 1] + ts[i]) / 2
-                    if t_contact - self.last_juggle_t >= self.COOLDOWN:
-                        self.count += 1
-                        self.last_juggle_t = t_contact
+        if y_i - y_before > self.MIN_PROM and y_i - y_after > self.MIN_PROM:
+            if t_i - self.last_juggle_t >= self.COOLDOWN:
+                self.count += 1
+                self.last_juggle_t = t_i
 
 
 @app.websocket("/ws")
