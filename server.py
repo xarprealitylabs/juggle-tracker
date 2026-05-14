@@ -1,26 +1,40 @@
 import asyncio
 import json
-import time
-import io
-import tempfile
+import logging
 import os
+import tempfile
+import threading
+import time
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from ultralytics import YOLO
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# YOLOv8n — sports ball is COCO class 32
-model = YOLO("yolov8n.pt")
 BALL_CLASS = 32
 CONF_THRESH = 0.30
 
+# Single model, serialised across threads with a lock
+_model = YOLO("yolov8n.pt")
+_model_lock = threading.Lock()
+
+
+def run_inference(frame: np.ndarray):
+    with _model_lock:
+        return _model(frame, classes=[BALL_CLASS], conf=CONF_THRESH, verbose=False)
+
 
 class KalmanBallTracker:
+    """Constant-velocity Kalman filter for ball position."""
+
     def __init__(self):
         self.kf = cv2.KalmanFilter(4, 2)
         self.kf.measurementMatrix = np.array([[1,0,0,0],[0,1,0,0]], np.float32)
@@ -29,50 +43,54 @@ class KalmanBallTracker:
         self.kf.measurementNoiseCov = 1e-1 * np.eye(2, dtype=np.float32)
         self.initialized = False
 
-    def update(self, x: float, y: float):
-        meas = np.array([[x], [y]], np.float32)
+    def step(self) -> tuple[float, float]:
+        """Advance state by one frame. Call once per frame regardless of detection."""
+        pred = self.kf.predict()
+        return float(pred[0]), float(pred[1])
+
+    def correct(self, x: float, y: float) -> tuple[float, float]:
+        """Update with a real measurement. Call after step() when ball is detected."""
         if not self.initialized:
             self.kf.statePre = np.array([[x],[y],[0],[0]], np.float32)
             self.initialized = True
-        self.kf.correct(meas)
-        pred = self.kf.predict()
-        return float(pred[0]), float(pred[1])
-
-    def predict(self):
-        pred = self.kf.predict()
-        return float(pred[0]), float(pred[1])
+        self.kf.correct(np.array([[x],[y]], np.float32))
+        post = self.kf.statePost
+        return float(post[0]), float(post[1])
 
 
 class JuggleSession:
-    WINDOW = 24          # frames in rolling window (~1.6s at 15fps)
-    MIN_DELTA = 12       # px minimum direction change to count
-    COOLDOWN_S = 0.45    # minimum seconds between juggles
+    WINDOW    = 24     # rolling window in frames
+    MIN_DELTA = 12     # minimum Y displacement (px) to register direction change
+    COOLDOWN  = 0.45   # minimum seconds between counted juggles
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
         self.history: list[tuple[float, float, float]] = []  # (x, y, t)
         self.count = 0
         self.last_juggle_t = 0.0
-        self.frames_since_ball = 0
+        self.frames_no_ball = 0
 
-    def process_frame(self, frame: np.ndarray) -> dict:
+    def process_frame(self, frame: np.ndarray, t: float | None = None) -> dict:
+        if t is None:
+            t = time.monotonic()
         h, w = frame.shape[:2]
-        t = time.monotonic()
 
-        results = model(frame, classes=[BALL_CLASS], conf=CONF_THRESH, verbose=False)
+        pred_x, pred_y = self.tracker.step()
 
-        bx, by = None, None
+        results = run_inference(frame)
+
         if results and len(results[0].boxes) > 0:
             box = results[0].boxes[0].xyxy[0].cpu().numpy()
             raw_x = (box[0] + box[2]) / 2
             raw_y = (box[1] + box[3]) / 2
-            sx, sy = self.tracker.update(raw_x, raw_y)
-            bx, by = sx, sy
-            self.frames_since_ball = 0
+            bx, by = self.tracker.correct(raw_x, raw_y)
+            self.frames_no_ball = 0
         else:
-            self.frames_since_ball += 1
-            if self.frames_since_ball < 6 and self.tracker.initialized:
-                bx, by = self.tracker.predict()
+            self.frames_no_ball += 1
+            if self.frames_no_ball < 6 and self.tracker.initialized:
+                bx, by = pred_x, pred_y  # coasted prediction — no double-predict
+            else:
+                bx, by = None, None
 
         if bx is not None:
             self.history.append((bx, by, t))
@@ -87,7 +105,7 @@ class JuggleSession:
         }
 
     def _detect_juggle(self, now: float):
-        if now - self.last_juggle_t < self.COOLDOWN_S:
+        if now - self.last_juggle_t < self.COOLDOWN:
             return
         n = len(self.history)
         if n < 10:
@@ -105,53 +123,55 @@ class JuggleSession:
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     session = JuggleSession()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+    log.info("WS connected")
     try:
         while True:
-            data = await ws.receive_bytes()
+            msg = await ws.receive()
+
+            # Text messages are control signals
+            if msg.get("text") == "RESET":
+                session = JuggleSession()
+                log.info("Session reset for Player 2")
+                continue
+
+            data = msg.get("bytes")
+            if not data:
+                continue
+
             img_array = np.frombuffer(data, np.uint8)
             frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if frame is None:
                 continue
+
             result = await loop.run_in_executor(None, session.process_frame, frame)
             await ws.send_text(json.dumps(result))
+
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        log.info("WS disconnected")
+    except Exception as e:
+        log.exception("WS error: %s", e)
 
 
-@app.post("/annotate")
-async def annotate_video(file: UploadFile = File(...)):
-    """
-    Receives a raw video upload, re-runs detections on the full trajectory
-    (no re-inference — uses stored detections from the session would be ideal,
-    but for simplicity here we do a fast re-pass on the uploaded video).
-    Returns an annotated MP4.
-    """
-    raw = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
-        f.write(raw)
-        in_path = f.name
-
-    out_path = in_path.replace(".webm", "_annotated.mp4")
-
+def _annotate_video_sync(in_path: str, out_path: str):
     cap = cv2.VideoCapture(in_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 15
+    fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
     w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+    writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+    font = cv2.FONT_HERSHEY_DUPLEX
 
     session = JuggleSession()
-    font = cv2.FONT_HERSHEY_DUPLEX
+    frame_idx = 0
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        result = session.process_frame(frame)
+        t = frame_idx / fps  # use video time, not wall clock
+        result = session.process_frame(frame, t=t)
         if result["bx"] is not None:
             cx = int(result["bx"] * w)
             cy = int(result["by"] * h)
@@ -159,15 +179,33 @@ async def annotate_video(file: UploadFile = File(...)):
             cv2.circle(frame, (cx, cy), 5,  (74, 222, 128), -1)
         cv2.putText(frame, str(result["count"]), (24, 80), font, 3,
                     (74, 222, 128), 4, cv2.LINE_AA)
-        out.write(frame)
+        writer.write(frame)
+        frame_idx += 1
 
     cap.release()
-    out.release()
+    writer.release()
     os.unlink(in_path)
 
-    return FileResponse(out_path, media_type="video/mp4",
-                        filename="juggle_annotated.mp4",
-                        background=None)
+
+@app.post("/annotate")
+async def annotate_video(file: UploadFile = File(...)):
+    raw = await file.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+        f.write(raw)
+        in_path = f.name
+
+    out_path = in_path[:-5] + "_annotated.mp4"
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _annotate_video_sync, in_path, out_path)
+
+    return FileResponse(
+        out_path,
+        media_type="video/mp4",
+        filename="juggle_annotated.mp4",
+        background=BackgroundTask(os.unlink, out_path),
+    )
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

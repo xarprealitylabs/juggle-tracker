@@ -23,9 +23,7 @@
   .screen.active { display: flex; }
 
   /* HOME */
-  #screen-home {
-    background: radial-gradient(ellipse at center, #1a4a1a 0%, #0a1f0a 70%); gap: 24px;
-  }
+  #screen-home { background: radial-gradient(ellipse at center, #1a4a1a 0%, #0a1f0a 70%); gap: 20px; }
   .pitch-lines {
     position: absolute; inset: 0;
     background-image:
@@ -48,9 +46,11 @@
   .btn:active { background: #15803d; transform: scale(0.97); }
   .btn.secondary {
     background: transparent; border: 2px solid #4ade80; color: #4ade80;
-    font-size: 15px; padding: 12px 32px; margin-top: -8px;
+    font-size: 15px; padding: 12px 32px; margin-top: -4px;
   }
+  .btn.upload-btn { background: #0f766e; font-size: 15px; padding: 13px 32px; }
   .notice { font-size: 12px; color: #4ade80; opacity: 0.5; }
+  .divider { width: 100%; max-width: 280px; border: none; border-top: 1px solid rgba(74,222,128,0.2); margin: 4px 0; }
 
   /* CONNECTING */
   #screen-connecting { gap: 20px; background: #0a1f0a; }
@@ -129,7 +129,33 @@
   .btn-row .btn { flex: 1; font-size: 15px; padding: 14px 8px; }
   #btn-download { background: #1d4ed8; }
   #btn-share    { background: #0891b2; }
-  .uploading-msg { font-size: 13px; color: #86efac; }
+  .status-msg { font-size: 13px; color: #86efac; }
+
+  /* UPLOAD */
+  #screen-upload { gap: 20px; background: #0a1f0a; }
+  #screen-upload h2 { font-size: 22px; color: #4ade80; }
+  .file-drop {
+    width: 100%; max-width: 300px; padding: 32px 16px;
+    border: 2px dashed rgba(74,222,128,0.4); border-radius: 16px;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    cursor: pointer; transition: border-color 0.2s;
+    position: relative;
+  }
+  .file-drop:hover { border-color: #4ade80; }
+  .file-drop input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+  .file-drop .drop-icon { font-size: 40px; }
+  .file-drop p { font-size: 14px; color: #86efac; }
+  #upload-filename { font-size: 13px; color: #4ade80; min-height: 18px; }
+
+  /* PROCESSING (upload) */
+  #screen-processing { gap: 20px; background: #0a1f0a; }
+  #processing-label { font-size: 15px; color: #86efac; }
+  .progress-bar-wrap {
+    width: 240px; height: 6px; background: rgba(74,222,128,0.15); border-radius: 3px;
+  }
+  .progress-bar { height: 100%; background: #4ade80; border-radius: 3px; width: 0%; transition: width 0.3s; }
 </style>
 </head>
 <body>
@@ -143,7 +169,9 @@
     <p class="subtitle">Quem faz mais keepups?</p>
     <button class="btn" onclick="startChallenge()">Jogar</button>
     <button class="btn secondary" onclick="startSolo()">Modo Solo</button>
-    <p class="notice">Detecção por IA — câmara traseira</p>
+    <hr class="divider">
+    <button class="btn upload-btn" onclick="goUpload()">📁 Upload Vídeo</button>
+    <p class="notice">Detecção por IA · câmara traseira ou upload</p>
   </div>
 
   <!-- CONNECTING -->
@@ -186,7 +214,7 @@
     <button class="btn" onclick="setupPlayer(2)">Pronto ✊</button>
   </div>
 
-  <!-- RESULT -->
+  <!-- RESULT (live game) -->
   <div id="screen-result" class="screen">
     <div class="winner-crown">🏆</div>
     <div id="result-title">Vencedor!</div>
@@ -200,10 +228,46 @@
         <div class="p-score" id="result-p2">0</div>
       </div>
     </div>
-    <p class="uploading-msg" id="uploading-msg" style="display:none">A gerar vídeo anotado...</p>
+    <p class="status-msg" id="result-status">A gerar vídeo anotado...</p>
     <div class="btn-row" id="result-btns" style="display:none">
       <button class="btn" id="btn-download" onclick="downloadClip()">💾 Clip</button>
       <button class="btn" id="btn-share"    onclick="shareClip()">📤 Share</button>
+    </div>
+    <button class="btn secondary" style="margin-top:8px" onclick="resetGame()">Jogar de novo</button>
+  </div>
+
+  <!-- UPLOAD -->
+  <div id="screen-upload" class="screen">
+    <div style="font-size:48px">📹</div>
+    <h2>Upload Vídeo</h2>
+    <p style="color:#86efac;font-size:14px">Vídeo de malabarismo já gravado</p>
+    <div class="file-drop" id="file-drop">
+      <input type="file" id="upload-input" accept="video/*" onchange="onFileChosen(this)">
+      <div class="drop-icon">📂</div>
+      <p>Toca para escolher vídeo</p>
+    </div>
+    <div id="upload-filename"></div>
+    <button class="btn" id="btn-process" onclick="processUpload()" disabled style="opacity:0.4">Processar IA</button>
+    <button class="btn secondary" onclick="resetGame()">← Voltar</button>
+  </div>
+
+  <!-- PROCESSING -->
+  <div id="screen-processing" class="screen">
+    <div class="spinner"></div>
+    <p id="processing-label" style="color:#86efac">A analisar vídeo com IA...</p>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+    <p style="font-size:12px;color:rgba(255,255,255,0.3);margin-top:8px">Pode demorar alguns segundos</p>
+  </div>
+
+  <!-- RESULT (upload) -->
+  <div id="screen-upload-result" class="screen">
+    <div class="winner-crown">🎯</div>
+    <div id="upload-result-title" style="font-size:28px;color:#fbbf24;text-transform:uppercase;letter-spacing:2px">Resultado</div>
+    <div id="upload-result-score" style="font-size:80px;font-weight:900;color:#4ade80"></div>
+    <p style="color:#86efac;font-size:14px">keepups detectados</p>
+    <div class="btn-row">
+      <button class="btn" id="btn-upload-download" onclick="downloadAnnotated()" style="background:#1d4ed8">💾 Clip</button>
+      <button class="btn" id="btn-upload-share"    onclick="shareAnnotated()"   style="background:#0891b2">📤 Share</button>
     </div>
     <button class="btn secondary" onclick="resetGame()">Jogar de novo</button>
   </div>
@@ -219,15 +283,25 @@ const S = {
   ws: null,
   sessionActive: false,
   animFrame: null,
-  lastCount: 0,
+  // Per-player tracking
+  lastCount: 0,       // display count for current player (resets per player)
+  p2BaseCount: 0,     // server count when Player 2 started (for delta)
   // Recording
   mediaRecorder: null,
   recordedChunks: [],
-  lastBlob: null,
+  rawBlob: null,
   annotatedBlob: null,
+  // Upload
+  uploadFile: null,
 };
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+// Reusable offscreen canvas — created once
+const offscreen = document.createElement('canvas');
+offscreen.width  = 320;
+offscreen.height = 240;
+const offCtx = offscreen.getContext('2d');
 
 // ─── SCREENS ─────────────────────────────────────────────────────────────────
 function show(id) {
@@ -241,10 +315,11 @@ function startSolo()      { S.mode = 'solo'; init(); }
 // ─── INIT — camera + websocket ────────────────────────────────────────────────
 async function init() {
   show('connecting');
+
   try {
     S.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
-      audio: false
+      audio: false,
     });
   } catch (e) {
     alert('Câmara necessária: ' + e.message);
@@ -253,7 +328,7 @@ async function init() {
   }
 
   try {
-    await connectWS();
+    await openWS();
   } catch (e) {
     alert('Não foi possível ligar ao servidor. Verifica a ligação.');
     show('home');
@@ -263,14 +338,14 @@ async function init() {
   setupPlayer(1);
 }
 
-function connectWS() {
+function openWS() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(WS_URL);
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => { S.ws = ws; resolve(); };
-    ws.onerror = () => reject(new Error('WS error'));
+    ws.onopen    = () => { S.ws = ws; resolve(); };
+    ws.onerror   = ()  => reject(new Error('WS error'));
     ws.onmessage = onServerMessage;
-    ws.onclose = () => {
+    ws.onclose   = () => {
       if (S.sessionActive) {
         document.getElementById('ws-status').textContent = '🔴 desligado';
       }
@@ -282,11 +357,27 @@ function connectWS() {
 function setupPlayer(n) {
   S.currentPlayer = n;
   document.getElementById('setup-badge').textContent = n === 1 ? '1️⃣' : '2️⃣';
-  document.getElementById('setup-title').textContent = `Jogador ${n}`;
+  document.getElementById('setup-title').textContent  = `Jogador ${n}`;
   show('setup');
 }
 
 function startPlayer() {
+  if (S.sessionActive) return;  // guard double-call
+
+  // For Player 2: reconnect WS so server gets a fresh JuggleSession
+  if (S.currentPlayer === 2) {
+    if (S.ws) { S.ws.close(); S.ws = null; }
+    openWS().catch(() => {
+      alert('Erro ao reiniciar sessão. Tenta de novo.');
+      show('handoff');
+    }).then(() => _beginPlayerSession());
+    return;
+  }
+
+  _beginPlayerSession();
+}
+
+function _beginPlayerSession() {
   S.scores[S.currentPlayer - 1] = 0;
   S.lastCount = 0;
   S.sessionActive = true;
@@ -297,7 +388,10 @@ function startPlayer() {
   const canvas = document.getElementById('canvas-overlay');
   video.srcObject = S.stream;
 
+  let started = false;
   const ready = () => {
+    if (started) return;
+    started = true;
     canvas.width  = video.videoWidth  || 640;
     canvas.height = video.videoHeight || 480;
     startRecording();
@@ -309,7 +403,7 @@ function startPlayer() {
   show('game');
 }
 
-// ─── FRAME LOOP — capture → WS → overlay ─────────────────────────────────────
+// ─── FRAME LOOP ───────────────────────────────────────────────────────────────
 let sending = false;
 
 function frameLoop() {
@@ -319,24 +413,20 @@ function frameLoop() {
   const video  = document.getElementById('camera');
   const canvas = document.getElementById('canvas-overlay');
   const ctx    = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
 
-  ctx.drawImage(video, 0, 0, W, H);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // Send frame to server at ~15fps (skip if still waiting for response)
   if (!sending && S.ws && S.ws.readyState === WebSocket.OPEN) {
     sending = true;
-    // Capture at reduced size for speed
-    const offscreen = document.createElement('canvas');
-    offscreen.width = 320; offscreen.height = 240;
-    offscreen.getContext('2d').drawImage(video, 0, 0, 320, 240);
+    offCtx.drawImage(video, 0, 0, 320, 240);
     offscreen.toBlob(blob => {
       blob.arrayBuffer().then(buf => {
         if (S.ws && S.ws.readyState === WebSocket.OPEN) {
           S.ws.send(buf);
+          // sending = false resets in onServerMessage (back-pressure)
+        } else {
+          sending = false;
         }
-        // Rate-limit to ~15fps
-        setTimeout(() => { sending = false; }, 67);
       });
     }, 'image/jpeg', 0.7);
   }
@@ -344,6 +434,8 @@ function frameLoop() {
 
 // ─── SERVER RESPONSE ──────────────────────────────────────────────────────────
 function onServerMessage(evt) {
+  sending = false;  // server responded — allow next frame
+
   let data;
   try { data = JSON.parse(evt.data); } catch { return; }
 
@@ -351,7 +443,6 @@ function onServerMessage(evt) {
   const ctx    = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
 
-  // Draw ball overlay
   if (data.bx !== null && data.bx !== undefined) {
     const cx = Math.round(data.bx * W);
     const cy = Math.round(data.by * H);
@@ -371,7 +462,6 @@ function onServerMessage(evt) {
     document.getElementById('ws-status').textContent = '🟡 sem bola';
   }
 
-  // Update score
   if (data.count > S.lastCount) {
     S.lastCount = data.count;
     S.scores[S.currentPlayer - 1] = data.count;
@@ -383,6 +473,7 @@ function onServerMessage(evt) {
 // ─── SESSION END ──────────────────────────────────────────────────────────────
 function stopPlayer() {
   S.sessionActive = false;
+  sending = false;
   cancelAnimationFrame(S.animFrame);
   stopRecording();
 
@@ -397,7 +488,7 @@ function stopPlayer() {
 // ─── RECORDING ───────────────────────────────────────────────────────────────
 function startRecording() {
   S.recordedChunks = [];
-  S.lastBlob = null;
+  S.rawBlob = null;
   S.annotatedBlob = null;
   const canvas = document.getElementById('canvas-overlay');
   const cs = canvas.captureStream(30);
@@ -407,8 +498,12 @@ function startRecording() {
   S.mediaRecorder = new MediaRecorder(cs, opts);
   S.mediaRecorder.ondataavailable = e => { if (e.data.size > 0) S.recordedChunks.push(e.data); };
   S.mediaRecorder.onstop = () => {
-    S.lastBlob = new Blob(S.recordedChunks, { type: S.mediaRecorder.mimeType || 'video/webm' });
-    uploadForAnnotation();
+    S.rawBlob = new Blob(S.recordedChunks, { type: S.mediaRecorder.mimeType || 'video/webm' });
+    uploadForAnnotation(S.rawBlob, (blob) => {
+      S.annotatedBlob = blob;
+      document.getElementById('result-status').textContent = '';
+      document.getElementById('result-btns').style.display = 'flex';
+    });
   };
   S.mediaRecorder.start(100);
 }
@@ -417,30 +512,18 @@ function stopRecording() {
   if (S.mediaRecorder && S.mediaRecorder.state !== 'inactive') S.mediaRecorder.stop();
 }
 
-async function uploadForAnnotation() {
-  if (!S.lastBlob) return;
-  const msg = document.getElementById('uploading-msg');
-  const btns = document.getElementById('result-btns');
-  msg.style.display = 'block';
-  btns.style.display = 'none';
-
+async function uploadForAnnotation(blob, onDone) {
   try {
     const fd = new FormData();
-    fd.append('file', S.lastBlob, 'session.webm');
+    fd.append('file', blob, 'session.webm');
     const resp = await fetch('/annotate', { method: 'POST', body: fd });
-    if (resp.ok) {
-      S.annotatedBlob = await resp.blob();
-    }
-  } catch (e) {
-    // Fall back to raw recording
-    S.annotatedBlob = S.lastBlob;
+    onDone(resp.ok ? await resp.blob() : blob);
+  } catch {
+    onDone(blob);  // fallback to raw recording
   }
-
-  msg.style.display = 'none';
-  btns.style.display = 'flex';
 }
 
-// ─── RESULT ───────────────────────────────────────────────────────────────────
+// ─── RESULT (live game) ───────────────────────────────────────────────────────
 function showResult() {
   const [s1, s2] = S.scores;
   document.getElementById('result-p1').textContent = s1;
@@ -456,34 +539,104 @@ function showResult() {
   document.getElementById('card-p1').classList.toggle('winner', winner === 1);
   document.getElementById('card-p2').classList.toggle('winner', winner === 2);
   if (S.mode === 'solo') document.getElementById('card-p2').style.display = 'none';
+
+  document.getElementById('result-status').textContent = 'A gerar vídeo anotado...';
   document.getElementById('result-btns').style.display = 'none';
-  document.getElementById('uploading-msg').style.display = 'block';
   show('result');
 }
 
 function downloadClip() {
-  const blob = S.annotatedBlob || S.lastBlob;
+  const blob = S.annotatedBlob || S.rawBlob;
   if (!blob) { alert('Clip ainda a processar…'); return; }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `juggle-${Date.now()}.mp4`; a.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(blob, `juggle-${Date.now()}.mp4`);
 }
 
 async function shareClip() {
-  const blob = S.annotatedBlob || S.lastBlob;
+  const blob = S.annotatedBlob || S.rawBlob;
   if (!blob) { alert('Clip ainda a processar…'); return; }
-  const file = new File([blob], 'juggle.mp4', { type: blob.type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    await navigator.share({ files: [file], title: 'Juggle Challenge ⚽',
-                            text: `${S.scores[S.currentPlayer - 1]} keepups!` });
-  } else { downloadClip(); }
+  const score = S.mode === 'solo' ? S.scores[0] : Math.max(...S.scores);
+  await shareOrDownload(blob, 'juggle.mp4', `${score} keepups! ⚽`);
 }
 
+// ─── UPLOAD FLOW ──────────────────────────────────────────────────────────────
+function goUpload() {
+  S.uploadFile = null;
+  document.getElementById('upload-filename').textContent = '';
+  document.getElementById('btn-process').disabled = true;
+  document.getElementById('btn-process').style.opacity = '0.4';
+  document.getElementById('upload-input').value = '';
+  show('upload');
+}
+
+function onFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  S.uploadFile = file;
+  document.getElementById('upload-filename').textContent = file.name;
+  document.getElementById('btn-process').disabled = false;
+  document.getElementById('btn-process').style.opacity = '1';
+}
+
+async function processUpload() {
+  if (!S.uploadFile) return;
+  show('processing');
+
+  // Fake progress bar (can't know real progress without streaming from server)
+  let pct = 0;
+  const bar = document.getElementById('progress-bar');
+  const ticker = setInterval(() => {
+    pct = Math.min(pct + 2, 90);
+    bar.style.width = pct + '%';
+  }, 800);
+
+  try {
+    const fd = new FormData();
+    fd.append('file', S.uploadFile, S.uploadFile.name);
+    const resp = await fetch('/annotate', { method: 'POST', body: fd });
+
+    clearInterval(ticker);
+    bar.style.width = '100%';
+
+    if (!resp.ok) throw new Error('Server error');
+
+    const annotated = await resp.blob();
+    S.annotatedBlob = annotated;
+
+    // Try to get juggle count from the blob metadata — we can't easily,
+    // so ask the user to look at the video. Show download/share immediately.
+    // TODO: server could return count in header
+    showUploadResult();
+  } catch (e) {
+    clearInterval(ticker);
+    alert('Erro ao processar o vídeo. Tenta de novo.');
+    show('upload');
+  }
+}
+
+function showUploadResult() {
+  document.getElementById('upload-result-title').textContent = 'Análise completa!';
+  document.getElementById('upload-result-score').textContent = '🎬';
+  show('upload-result');
+}
+
+function downloadAnnotated() {
+  if (!S.annotatedBlob) return;
+  triggerDownload(S.annotatedBlob, `juggle_anotado_${Date.now()}.mp4`);
+}
+
+async function shareAnnotated() {
+  if (!S.annotatedBlob) return;
+  await shareOrDownload(S.annotatedBlob, 'juggle_anotado.mp4', 'Juggle Challenge ⚽');
+}
+
+// ─── RESET ───────────────────────────────────────────────────────────────────
 function resetGame() {
-  S.scores = [0, 0]; S.lastBlob = null; S.annotatedBlob = null; S.lastCount = 0;
-  document.getElementById('card-p2').style.display = '';
+  S.sessionActive = false;
+  sending = false;
+  S.scores = [0, 0]; S.lastCount = 0;
+  S.rawBlob = null; S.annotatedBlob = null; S.uploadFile = null;
   if (S.ws) { S.ws.close(); S.ws = null; }
+  document.getElementById('card-p2').style.display = '';
   show('home');
 }
 
@@ -492,6 +645,22 @@ function flashDetect() {
   const el = document.getElementById('detect-badge');
   el.classList.add('visible');
   setTimeout(() => el.classList.remove('visible'), 400);
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function shareOrDownload(blob, filename, text) {
+  const file = new File([blob], filename, { type: blob.type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    await navigator.share({ files: [file], title: 'Juggle Challenge ⚽', text });
+  } else {
+    triggerDownload(blob, filename);
+  }
 }
 </script>
 </body>
