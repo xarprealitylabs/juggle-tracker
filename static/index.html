@@ -296,7 +296,11 @@ const S = {
   uploadFile: null,
 };
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+// Auto-detect base path so this works at / or /soccer-juggling/ or any subpath
+const BASE_PATH = location.pathname.endsWith('/')
+  ? location.pathname.slice(0, -1)
+  : location.pathname.substring(0, location.pathname.lastIndexOf('/'));
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE_PATH}/ws`;
 
 // Reusable offscreen canvas — created once
 const offscreen = document.createElement('canvas');
@@ -531,7 +535,7 @@ async function uploadForAnnotation(blob, onDone) {
   try {
     const fd = new FormData();
     fd.append('file', blob, 'session.webm');
-    const resp = await fetch('/annotate', { method: 'POST', body: fd });
+    const resp = await fetch(`${BASE_PATH}/annotate`, { method: 'POST', body: fd });
     onDone(resp.ok ? await resp.blob() : blob);
   } catch {
     onDone(blob);  // fallback to raw recording
@@ -607,7 +611,7 @@ async function processUpload() {
   try {
     const fd = new FormData();
     fd.append('file', S.uploadFile, S.uploadFile.name);
-    const resp = await fetch('/annotate', { method: 'POST', body: fd });
+    const resp = await fetch(`${BASE_PATH}/annotate`, { method: 'POST', body: fd });
 
     clearInterval(ticker);
     bar.style.width = '100%';
