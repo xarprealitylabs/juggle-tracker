@@ -59,13 +59,14 @@ class KalmanBallTracker:
 
 
 class JuggleSession:
-    WINDOW    = 24     # rolling window in frames
-    MIN_DELTA = 12     # minimum Y displacement (px) to register direction change
-    COOLDOWN  = 0.45   # minimum seconds between counted juggles
+    WINDOW        = 30    # rolling window in frames
+    MIN_DELTA_PCT = 0.04  # minimum Y change as fraction of frame height
+    COOLDOWN      = 0.25  # minimum seconds between juggles (handles up to ~4/s)
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
-        self.history: list[tuple[float, float, float]] = []  # (x, y, t)
+        # Store normalised (0-1) coordinates so MIN_DELTA_PCT works across resolutions
+        self.history: list[tuple[float, float, float]] = []  # (x_norm, y_norm, t)
         self.count = 0
         self.last_juggle_t = 0.0
         self.frames_no_ball = 0
@@ -88,15 +89,16 @@ class JuggleSession:
         else:
             self.frames_no_ball += 1
             if self.frames_no_ball < 6 and self.tracker.initialized:
-                bx, by = pred_x, pred_y  # coasted prediction — no double-predict
+                bx, by = pred_x, pred_y
             else:
                 bx, by = None, None
 
         if bx is not None:
-            self.history.append((bx, by, t))
+            # Store normalised so detection thresholds are resolution-independent
+            self.history.append((bx / w, by / h, t))
             if len(self.history) > self.WINDOW:
                 self.history.pop(0)
-            self._detect_juggle(t)
+            self._detect_juggle()
 
         return {
             "bx": round(bx / w, 4) if bx is not None else None,
@@ -104,19 +106,30 @@ class JuggleSession:
             "count": self.count,
         }
 
-    def _detect_juggle(self, now: float):
-        if now - self.last_juggle_t < self.COOLDOWN:
-            return
+    def _detect_juggle(self):
+        """Local-minimum detection: each arc bottom = one juggle.
+        Works correctly for fast jugglers with multiple arcs in the window."""
         n = len(self.history)
-        if n < 10:
+        if n < 3:
             return
+
         ys = [p[1] for p in self.history]
-        mid = n // 2
-        going_down = ys[mid] - ys[0]
-        going_up   = ys[-1] - ys[mid]
-        if going_down > self.MIN_DELTA and going_up < -self.MIN_DELTA:
-            self.count += 1
-            self.last_juggle_t = now
+        ts = [p[2] for p in self.history]
+
+        # Examine the second-to-last point — we can only confirm a minimum
+        # once we see the next point is higher.
+        i = n - 2
+        before = ys[i - 1]
+        at     = ys[i]
+        after  = ys[i + 1]
+
+        # Local minimum: both neighbours are higher by at least MIN_DELTA_PCT
+        if (before - at > self.MIN_DELTA_PCT and
+                after - at > self.MIN_DELTA_PCT):
+            t_min = ts[i]
+            if t_min - self.last_juggle_t >= self.COOLDOWN:
+                self.count += 1
+                self.last_juggle_t = t_min
 
 
 @app.websocket("/ws")
