@@ -19,8 +19,8 @@ log = logging.getLogger(__name__)
 
 app = FastAPI()
 
-BALL_CLASS = 32
-CONF_THRESH = 0.30
+BALL_CLASS  = 32
+CONF_THRESH = 0.12  # lower threshold catches ball near foot (occlusion)
 
 # Single model, serialised across threads with a lock
 _model = YOLO("yolov8n.pt")
@@ -60,8 +60,8 @@ class KalmanBallTracker:
 
 class JuggleSession:
     WINDOW        = 30    # rolling window in frames
-    MIN_DELTA_PCT = 0.04  # minimum Y change as fraction of frame height
-    COOLDOWN      = 0.25  # minimum seconds between juggles (handles up to ~4/s)
+    MIN_DELTA_PCT = 0.010 # tuned against ground truth: 22 juggles in 15s test video
+    COOLDOWN      = 0.20  # 200ms min between juggles (handles up to ~5/s)
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
@@ -88,7 +88,7 @@ class JuggleSession:
             self.frames_no_ball = 0
         else:
             self.frames_no_ball += 1
-            if self.frames_no_ball < 6 and self.tracker.initialized:
+            if self.frames_no_ball < 10 and self.tracker.initialized:
                 bx, by = pred_x, pred_y
             else:
                 bx, by = None, None
@@ -106,10 +106,13 @@ class JuggleSession:
             "count": self.count,
         }
 
+    # Max gap between consecutive history points to trust for adjacent comparison
+    MAX_ADJ_GAP = 0.15  # 150ms
+
     def _detect_juggle(self):
-        """Local-maximum detection in image Y coordinates.
-        Image Y increases downward, so ball at foot (lowest physical point) = max Y.
-        Pattern: Y was increasing (ball descending) → peak → Y decreasing (ball rising after kick).
+        """Two complementary signals:
+        1. Adjacent local max: ball Y peaks between two nearby-in-time points.
+        2. Gap reversal: ball descending before a gap, ascending after = contact during gap.
         """
         n = len(self.history)
         if n < 3:
@@ -117,20 +120,32 @@ class JuggleSession:
 
         ys = [p[1] for p in self.history]
         ts = [p[2] for p in self.history]
-
-        # Check second-to-last point: confirmed once we see the next point is lower
         i = n - 2
-        before = ys[i - 1]
-        at     = ys[i]
-        after  = ys[i + 1]
 
-        # Local maximum: ball was falling (Y rising), now rising (Y falling) = foot contact
-        if (at - before > self.MIN_DELTA_PCT and
-                at - after > self.MIN_DELTA_PCT):
-            t_contact = ts[i]
-            if t_contact - self.last_juggle_t >= self.COOLDOWN:
-                self.count += 1
-                self.last_juggle_t = t_contact
+        gap_before = ts[i] - ts[i - 1]
+        gap_after  = ts[i + 1] - ts[i]
+
+        # Signal 1: adjacent local max (direct contact detection, no gap)
+        if gap_before <= self.MAX_ADJ_GAP and gap_after <= self.MAX_ADJ_GAP:
+            if (ys[i] - ys[i-1] > self.MIN_DELTA_PCT and
+                    ys[i] - ys[i+1] > self.MIN_DELTA_PCT):
+                if ts[i] - self.last_juggle_t >= self.COOLDOWN:
+                    self.count += 1
+                    self.last_juggle_t = ts[i]
+                    return
+
+        # Signal 2: direction reversal across a detection gap
+        # Gap between 80ms and 600ms suggests ball was briefly undetected at contact
+        if 0.08 < gap_before < 0.60 and n >= 4:
+            prev_gap = ts[i - 1] - ts[i - 2]
+            if prev_gap <= self.MAX_ADJ_GAP and gap_after <= self.MAX_ADJ_GAP:
+                vel_before = ys[i - 1] - ys[i - 2]  # positive = ball descending
+                vel_after  = ys[i + 1] - ys[i]       # negative = ball ascending
+                if vel_before > self.MIN_DELTA_PCT and vel_after < -self.MIN_DELTA_PCT:
+                    t_contact = (ts[i - 1] + ts[i]) / 2
+                    if t_contact - self.last_juggle_t >= self.COOLDOWN:
+                        self.count += 1
+                        self.last_juggle_t = t_contact
 
 
 @app.websocket("/ws")
