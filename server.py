@@ -107,8 +107,10 @@ class JuggleSession:
         }
 
     def _detect_juggle(self):
-        """Local-minimum detection: each arc bottom = one juggle.
-        Works correctly for fast jugglers with multiple arcs in the window."""
+        """Local-maximum detection in image Y coordinates.
+        Image Y increases downward, so ball at foot (lowest physical point) = max Y.
+        Pattern: Y was increasing (ball descending) → peak → Y decreasing (ball rising after kick).
+        """
         n = len(self.history)
         if n < 3:
             return
@@ -116,20 +118,19 @@ class JuggleSession:
         ys = [p[1] for p in self.history]
         ts = [p[2] for p in self.history]
 
-        # Examine the second-to-last point — we can only confirm a minimum
-        # once we see the next point is higher.
+        # Check second-to-last point: confirmed once we see the next point is lower
         i = n - 2
         before = ys[i - 1]
         at     = ys[i]
         after  = ys[i + 1]
 
-        # Local minimum: both neighbours are higher by at least MIN_DELTA_PCT
-        if (before - at > self.MIN_DELTA_PCT and
-                after - at > self.MIN_DELTA_PCT):
-            t_min = ts[i]
-            if t_min - self.last_juggle_t >= self.COOLDOWN:
+        # Local maximum: ball was falling (Y rising), now rising (Y falling) = foot contact
+        if (at - before > self.MIN_DELTA_PCT and
+                at - after > self.MIN_DELTA_PCT):
+            t_contact = ts[i]
+            if t_contact - self.last_juggle_t >= self.COOLDOWN:
                 self.count += 1
-                self.last_juggle_t = t_min
+                self.last_juggle_t = t_contact
 
 
 @app.websocket("/ws")
