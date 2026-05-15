@@ -20,16 +20,22 @@ log = logging.getLogger(__name__)
 app = FastAPI()
 
 BALL_CLASS  = 32
-CONF_THRESH = 0.10  # tuned: conf=0.10 + span5 gives count=20/22 (err=2) on ground-truth video
+CONF_THRESH = 0.10
+ANKLE_CONF  = 0.40  # minimum keypoint confidence to trust ankle position
+LEFT_ANKLE  = 15    # COCO keypoint index
+RIGHT_ANKLE = 16
 
-# Single model, serialised across threads with a lock
-_model = YOLO("yolov8n.pt")
+# Both models serialised under one lock — prevents concurrent YOLO calls across threads
+_ball_model = YOLO("yolov8n.pt")
+_pose_model = YOLO("yolov8n-pose.pt")
 _model_lock = threading.Lock()
 
 
 def run_inference(frame: np.ndarray):
     with _model_lock:
-        return _model(frame, classes=[BALL_CLASS], conf=CONF_THRESH, verbose=False)
+        ball = _ball_model(frame, classes=[BALL_CLASS], conf=CONF_THRESH, verbose=False)
+        pose = _pose_model(frame, verbose=False)
+    return ball, pose
 
 
 class KalmanBallTracker:
@@ -59,15 +65,16 @@ class KalmanBallTracker:
 
 
 class JuggleSession:
-    WINDOW    = 30    # rolling window in frames
-    SPAN      = 5     # span-based detection: compare Y against ±SPAN frames
-    MIN_PROM  = 0.06  # minimum prominence (6% of frame height) — tuned: count=20/22
-    COOLDOWN  = 0.20  # 200ms min between juggles
+    WINDOW     = 30    # rolling window in positions
+    SPAN       = 5     # compare position i against i±SPAN
+    MIN_PROM   = 0.06  # ball: 6% of frame height prominence
+    ANKLE_PROM = 0.06  # ankle: 6% of frame height — kick arc is larger so conservative
+    COOLDOWN   = 0.20  # 200ms between juggles (supports ~5/s)
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
-        # Store normalised (0-1) coordinates so MIN_DELTA_PCT works across resolutions
-        self.history: list[tuple[float, float, float]] = []  # (x_norm, y_norm, t)
+        self.history: list[tuple[float, float, float]] = []   # (x_norm, y_norm, t)
+        self.ankle_history: list[tuple[float, float]] = []    # (y_norm, t)
         self.count = 0
         self.last_juggle_t = 0.0
         self.frames_no_ball = 0
@@ -78,11 +85,12 @@ class JuggleSession:
         h, w = frame.shape[:2]
 
         pred_x, pred_y = self.tracker.step()
+        ball_results, pose_results = run_inference(frame)
 
-        results = run_inference(frame)
-
-        if results and len(results[0].boxes) > 0:
-            box = results[0].boxes[0].xyxy[0].cpu().numpy()
+        # ── Ball signal ────────────────────────────────────────────────────────
+        bx = by = None
+        if ball_results and len(ball_results[0].boxes) > 0:
+            box = ball_results[0].boxes[0].xyxy[0].cpu().numpy()
             raw_x = (box[0] + box[2]) / 2
             raw_y = (box[1] + box[3]) / 2
             bx, by = self.tracker.correct(raw_x, raw_y)
@@ -91,15 +99,34 @@ class JuggleSession:
             self.frames_no_ball += 1
             if self.frames_no_ball < 10 and self.tracker.initialized:
                 bx, by = pred_x, pred_y
-            else:
-                bx, by = None, None
 
         if bx is not None:
-            # Store normalised so detection thresholds are resolution-independent
             self.history.append((bx / w, by / h, t))
             if len(self.history) > self.WINDOW:
                 self.history.pop(0)
-            self._detect_juggle()
+
+        # ── Pose signal — ankle tracking ───────────────────────────────────────
+        if pose_results and len(pose_results[0].keypoints) > 0:
+            try:
+                kpts = pose_results[0].keypoints
+                xy   = kpts.xy[0].cpu().numpy()
+                conf = kpts.conf[0].cpu().numpy() if kpts.conf is not None else None
+                candidates = []
+                for idx in (LEFT_ANKLE, RIGHT_ANKLE):
+                    if idx < len(xy):
+                        ak_x, ak_y = xy[idx]
+                        ak_conf = float(conf[idx]) if conf is not None else 1.0
+                        if ak_conf >= ANKLE_CONF and ak_y > 0:
+                            candidates.append(ak_y / h)
+                if candidates:
+                    # Track highest ankle (smallest y_norm = foot most upward = kicking foot)
+                    self.ankle_history.append((min(candidates), t))
+                    if len(self.ankle_history) > self.WINDOW:
+                        self.ankle_history.pop(0)
+            except Exception:
+                pass
+
+        self._detect_juggle()
 
         return {
             "bx": round(bx / w, 4) if bx is not None else None,
@@ -108,30 +135,36 @@ class JuggleSession:
         }
 
     def _detect_juggle(self):
-        """Span-based local Y-maximum detection.
+        """Two independent signals, shared cooldown prevents double-counting.
 
-        Compare ball Y at position (n - SPAN - 1) against SPAN frames before and after.
-        A local max in Y = ball at lowest point = just been kicked = juggle.
-        Detection lags by SPAN frames (~167ms at 30fps) — acceptable for a counter.
+        Signal 1 (ball): span-based local Y-max — ball at foot = max image Y.
+        Signal 2 (ankle): span-based local Y-min — foot at kick apex = min image Y.
         """
         n = len(self.history)
-        if n < 2 * self.SPAN + 1:
-            return
+        if n >= 2 * self.SPAN + 1:
+            i = n - self.SPAN - 1
+            _, y_i,      t_i      = self.history[i]
+            _, y_before, t_before = self.history[i - self.SPAN]
+            _, y_after,  _        = self.history[i + self.SPAN]
+            if t_i - t_before <= 1.0 and self.history[-1][2] - t_i <= 1.0:
+                if y_i - y_before > self.MIN_PROM and y_i - y_after > self.MIN_PROM:
+                    if t_i - self.last_juggle_t >= self.COOLDOWN:
+                        self.count += 1
+                        self.last_juggle_t = t_i
+                        return
 
-        i = n - self.SPAN - 1  # candidate: SPAN frames before the latest
-
-        _, y_i,      t_i      = self.history[i]
-        _, y_before, t_before = self.history[i - self.SPAN]
-        _, y_after,  t_after  = self.history[i + self.SPAN]  # = history[n-1]
-
-        # Reject if time spans imply a long detection gap (ball was lost)
-        if t_i - t_before > 1.0 or t_after - t_i > 1.0:
-            return
-
-        if y_i - y_before > self.MIN_PROM and y_i - y_after > self.MIN_PROM:
-            if t_i - self.last_juggle_t >= self.COOLDOWN:
-                self.count += 1
-                self.last_juggle_t = t_i
+        m = len(self.ankle_history)
+        if m >= 2 * self.SPAN + 1:
+            j = m - self.SPAN - 1
+            y_j,      t_j      = self.ankle_history[j]
+            y_before, t_before = self.ankle_history[j - self.SPAN]
+            y_after,  _        = self.ankle_history[j + self.SPAN]
+            if t_j - t_before <= 1.0 and self.ankle_history[-1][1] - t_j <= 1.0:
+                # Local MIN in ankle Y = foot at highest point = kick
+                if y_before - y_j > self.ANKLE_PROM and y_after - y_j > self.ANKLE_PROM:
+                    if t_j - self.last_juggle_t >= self.COOLDOWN:
+                        self.count += 1
+                        self.last_juggle_t = t_j
 
 
 @app.websocket("/ws")

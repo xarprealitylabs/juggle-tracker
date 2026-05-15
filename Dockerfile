@@ -10,8 +10,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the YOLOv8n model so first request isn't slow
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+# Pre-download models so first request isn't slow
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt'); YOLO('yolov8n-pose.pt')"
 
 COPY . .
 
