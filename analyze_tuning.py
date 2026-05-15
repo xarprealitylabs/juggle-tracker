@@ -263,13 +263,14 @@ def main():
 
             if error < best_score:
                 best_score = error
-                best_run = run
-                best_run["events"] = events
-                best_run["dets"] = dets
-                best_run["fps"] = fps
-                best_run["w"] = w
-                best_run["h"] = h
-                best_run["fn"] = fn
+                # Copy so we don't mutate the dict already in results["runs"]
+                best_run = dict(run)
+                best_run["_events"] = events
+                best_run["_dets"]   = dets
+                best_run["_fps"]    = fps
+                best_run["_w"]      = w
+                best_run["_h"]      = h
+                best_run["_fn"]     = fn
 
     print(f"\nBest: {best_run['approach']} @ conf={best_run['conf']}  "
           f"count={best_run['count']}  err={best_run['error']}")
@@ -288,17 +289,16 @@ def main():
         out_path = os.path.join(OUT_DIR, f"seg{seg_n:02d}_{t_s:.0f}s-{t_e:.0f}s.mp4")
         make_annotated_segment(
             VIDEO_PATH, t_s, t_e,
-            best_run["dets"], best_run["events"],
-            best_run["fps"], best_run["w"], best_run["h"],
+            best_run["_dets"], best_run["_events"],
+            best_run["_fps"], best_run["_w"], best_run["_h"],
             out_path, best_run["conf"],
         )
         print(f"  Saved {out_path}")
         t_s += seg_len
         seg_n += 1
 
-    # Write results JSON (without non-serialisable fields)
-    clean_best = {k: v for k, v in best_run.items()
-                  if k not in ("events", "dets", "fps", "w", "h", "fn")}
+    # Write results JSON — exclude private runtime fields (prefixed with _)
+    clean_best = {k: v for k, v in best_run.items() if not k.startswith("_")}
     results["best"] = clean_best
     results["elapsed_s"] = round(time.monotonic() - t0, 1)
 
