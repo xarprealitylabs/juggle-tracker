@@ -158,12 +158,13 @@ class JuggleSession:
 
         if currently_in_prox and not self.in_proximity:
             # Leading edge: first frame ball enters contact zone.
-            # Guard: ball must have been above the ankle recently (came from air).
-            # Prevents ghost hit when ball sits on ground near the foot.
+            # Guard: ball must NOT be significantly below the ankle.
+            # In image coords Y increases downward, so ball on ground has higher Y
+            # than ankle. A real keepup contact has ball_y ≈ ankle_y.
             ankle_y = self.ankle_history[-1][0]
-            recent_ys = [h[1] for h in self.history[-max(self.SPAN, 3):]]
-            ball_came_from_above = any(y < ankle_y - 0.05 for y in recent_ys)
-            if ball_came_from_above and t_now - self.last_juggle_t >= self.COOLDOWN:
+            _, by_norm, _ = self.history[-1]
+            ball_not_on_ground = by_norm <= ankle_y + 0.06  # 6% tolerance below ankle
+            if ball_not_on_ground and t_now - self.last_juggle_t >= self.COOLDOWN:
                 self.count += 1
                 self.last_juggle_t = t_now
 
