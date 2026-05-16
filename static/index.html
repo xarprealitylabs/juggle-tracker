@@ -248,6 +248,10 @@
     </div>
     <div id="upload-filename"></div>
     <button class="btn" id="btn-process" onclick="processUpload()" disabled style="opacity:0.4">Processar IA</button>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#86efac;cursor:pointer">
+      <input type="checkbox" id="debug-toggle" style="width:16px;height:16px;accent-color:#4ade80">
+      Modo debug (overlay de detecção)
+    </label>
     <button class="btn secondary" onclick="resetGame()">← Voltar</button>
   </div>
 
@@ -616,9 +620,9 @@ function onFileChosen(input) {
 
 async function processUpload() {
   if (!S.uploadFile) return;
+  const isDebug = document.getElementById('debug-toggle').checked;
   show('processing');
 
-  // Fake progress bar (can't know real progress without streaming from server)
   let pct = 0;
   const bar = document.getElementById('progress-bar');
   const ticker = setInterval(() => {
@@ -629,7 +633,8 @@ async function processUpload() {
   try {
     const fd = new FormData();
     fd.append('file', S.uploadFile, S.uploadFile.name);
-    const resp = await fetch(`${BASE_PATH}/annotate`, { method: 'POST', body: fd });
+    const endpoint = isDebug ? `${BASE_PATH}/annotate_debug` : `${BASE_PATH}/annotate`;
+    const resp = await fetch(endpoint, { method: 'POST', body: fd });
 
     clearInterval(ticker);
     bar.style.width = '100%';
