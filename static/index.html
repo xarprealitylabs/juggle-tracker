@@ -248,10 +248,15 @@
     </div>
     <div id="upload-filename"></div>
     <button class="btn" id="btn-process" onclick="processUpload()" disabled style="opacity:0.4">Processar IA</button>
-    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#86efac;cursor:pointer">
-      <input type="checkbox" id="debug-toggle" style="width:16px;height:16px;accent-color:#4ade80">
-      Modo debug (overlay de detecção)
-    </label>
+    <div style="display:flex;flex-direction:column;gap:8px;width:100%;max-width:280px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#86efac;cursor:pointer">
+        <input type="checkbox" id="debug-toggle" style="width:16px;height:16px;accent-color:#4ade80">
+        Modo debug (ball + skeleton overlay)
+      </label>
+      <button class="btn secondary" id="btn-pose-only" onclick="processPoseOnly()" disabled style="opacity:0.4;font-size:13px;padding:10px">
+        🦴 Só skeleton (diagnóstico)
+      </button>
+    </div>
     <button class="btn secondary" onclick="resetGame()">← Voltar</button>
   </div>
 
@@ -614,6 +619,8 @@ function onFileChosen(input) {
       `${file.name} (${Math.round(vid.duration)}s)`;
     document.getElementById('btn-process').disabled = false;
     document.getElementById('btn-process').style.opacity = '1';
+    document.getElementById('btn-pose-only').disabled = false;
+    document.getElementById('btn-pose-only').style.opacity = '1';
   };
   vid.src = url;
 }
@@ -651,6 +658,27 @@ async function processUpload() {
   } catch (e) {
     clearInterval(ticker);
     alert(e.message || 'Erro ao processar o vídeo. Tenta de novo.');
+    show('upload');
+  }
+}
+
+async function processPoseOnly() {
+  if (!S.uploadFile) return;
+  show('processing');
+  let pct = 0;
+  const bar = document.getElementById('progress-bar');
+  const ticker = setInterval(() => { pct = Math.min(pct + 2, 90); bar.style.width = pct + '%'; }, 800);
+  try {
+    const fd = new FormData();
+    fd.append('file', S.uploadFile, S.uploadFile.name);
+    const resp = await fetch(`${BASE_PATH}/pose_only`, { method: 'POST', body: fd });
+    clearInterval(ticker); bar.style.width = '100%';
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `Erro ${resp.status}`);
+    S.annotatedBlob = await resp.blob();
+    showUploadResult(null);
+  } catch (e) {
+    clearInterval(ticker);
+    alert(e.message || 'Erro ao processar. Tenta de novo.');
     show('upload');
   }
 }

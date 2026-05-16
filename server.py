@@ -490,4 +490,127 @@ async def annotate_video_debug(file: UploadFile = File(...)):
     return response
 
 
+# COCO skeleton edges for drawing connections between keypoints
+_SKELETON_EDGES = [
+    (5, 7), (7, 9),   # left arm
+    (6, 8), (8, 10),  # right arm
+    (5, 6),           # shoulders
+    (5, 11), (6, 12), # torso sides
+    (11, 12),         # hips
+    (11, 13), (13, 15),  # left leg
+    (12, 14), (14, 16),  # right leg
+]
+_KP_COLORS = {
+    15: (0, 215, 255),   # left ankle — yellow
+    16: (0, 215, 255),   # right ankle — yellow
+    13: (100, 200, 0),   # left knee — green
+    14: (100, 200, 0),   # right knee — green
+}
+
+
+def _pose_only_sync(in_path: str, out_path: str):
+    cap = cv2.VideoCapture(in_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    rotation    = _video_rotation(in_path)
+    rotate_code = _ROTATE_MAP.get(rotation)
+    if rotate_code is not None and rotation in (90, 270, -90):
+        w, h = h, w
+    log.info("pose_only: %dx%d rotation=%d", w, h, rotation)
+
+    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    font   = cv2.FONT_HERSHEY_SIMPLEX
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if rotate_code is not None:
+            frame = cv2.rotate(frame, rotate_code)
+
+        with _model_lock:
+            results = _pose_model(frame, verbose=False)
+
+        if results and len(results[0].keypoints) > 0:
+            try:
+                xy   = results[0].keypoints.xy[0].cpu().numpy()    # [17, 2]
+                conf = results[0].keypoints.conf[0].cpu().numpy() \
+                       if results[0].keypoints.conf is not None else None
+
+                # Draw skeleton edges
+                for i, j in _SKELETON_EDGES:
+                    if i >= len(xy) or j >= len(xy):
+                        continue
+                    ci = float(conf[i]) if conf is not None else 1.0
+                    cj = float(conf[j]) if conf is not None else 1.0
+                    if ci < 0.3 or cj < 0.3:
+                        continue
+                    pi = (int(xy[i][0]), int(xy[i][1]))
+                    pj = (int(xy[j][0]), int(xy[j][1]))
+                    if pi == (0, 0) or pj == (0, 0):
+                        continue
+                    cv2.line(frame, pi, pj, (180, 180, 180), 2)
+
+                # Draw keypoints
+                KP_LABELS = {
+                    5: "Lsh", 6: "Rsh", 7: "Lelb", 8: "Relb",
+                    9: "Lwri", 10: "Rwri",
+                    11: "Lhip", 12: "Rhip",
+                    13: "Lkne", 14: "Rkne",
+                    15: "Lank", 16: "Rank",
+                }
+                for idx, label in KP_LABELS.items():
+                    if idx >= len(xy):
+                        continue
+                    kc = float(conf[idx]) if conf is not None else 1.0
+                    kx, ky = int(xy[idx][0]), int(xy[idx][1])
+                    if kc < 0.2 or (kx == 0 and ky == 0):
+                        continue
+                    color = _KP_COLORS.get(idx, (220, 220, 220))
+                    radius = 8 if idx in (15, 16) else 5
+                    cv2.circle(frame, (kx, ky), radius, color, -1)
+                    cv2.putText(frame, f"{label}:{kc:.2f}", (kx + 5, ky - 4),
+                                font, 0.4, color, 1)
+            except Exception as e:
+                log.debug("pose draw error: %s", e)
+
+        cv2.putText(frame, f"f{frame_idx}", (6, 22), font, 0.5, (255, 255, 255), 1)
+        writer.write(frame)
+        frame_idx += 1
+
+    cap.release()
+    writer.release()
+    os.unlink(in_path)
+    log.info("pose_only: done — %d frames", frame_idx)
+
+
+@app.post("/pose_only")
+async def pose_only(file: UploadFile = File(...)):
+    """Diagnostic: rotate + draw full skeleton only. No ball, no counting."""
+    raw = await file.read()
+    suffix = os.path.splitext(file.filename or ".mp4")[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(raw)
+        in_path = f.name
+
+    cap = cv2.VideoCapture(in_path)
+    n   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cap.release()
+    if n / fps > MAX_DURATION_S:
+        os.unlink(in_path)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Máximo {MAX_DURATION_S}s.")
+
+    out_path = in_path[:-len(suffix)] + "_pose.mp4"
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _pose_only_sync, in_path, out_path)
+
+    return FileResponse(out_path, media_type="video/mp4", filename="pose_skeleton.mp4",
+                        background=BackgroundTask(os.unlink, out_path))
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
