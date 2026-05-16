@@ -157,8 +157,13 @@ class JuggleSession:
             currently_in_prox = abs(by_norm - ankle_y) < self.PROXIMITY_THRESH
 
         if currently_in_prox and not self.in_proximity:
-            # Leading edge: first frame ball enters contact zone
-            if t_now - self.last_juggle_t >= self.COOLDOWN:
+            # Leading edge: first frame ball enters contact zone.
+            # Guard: ball must have been above the ankle recently (came from air).
+            # Prevents ghost hit when ball sits on ground near the foot.
+            ankle_y = self.ankle_history[-1][0]
+            recent_ys = [h[1] for h in self.history[-max(self.SPAN, 3):]]
+            ball_came_from_above = any(y < ankle_y - 0.05 for y in recent_ys)
+            if ball_came_from_above and t_now - self.last_juggle_t >= self.COOLDOWN:
                 self.count += 1
                 self.last_juggle_t = t_now
 
