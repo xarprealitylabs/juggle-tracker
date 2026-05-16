@@ -66,10 +66,9 @@ class KalmanBallTracker:
 
 class JuggleSession:
     WINDOW     = 30    # rolling window in positions
-    SPAN       = 5     # compare position i against i±SPAN
-    MIN_PROM   = 0.06  # ball: 6% of frame height prominence
-    ANKLE_PROM = 0.06  # ankle: 6% of frame height — kick arc is larger so conservative
-    COOLDOWN   = 0.20  # 200ms between juggles (supports ~5/s)
+    SPAN       = 5     # fallback arc detection span
+    MIN_PROM   = 0.06  # fallback arc prominence threshold
+    COOLDOWN   = 0.15  # 150ms hard minimum between juggles (~6/s max, above pro level)
 
     def __init__(self):
         self.tracker = KalmanBallTracker()
@@ -78,6 +77,7 @@ class JuggleSession:
         self.count = 0
         self.last_juggle_t = 0.0
         self.frames_no_ball = 0
+        self.in_proximity = False   # leading-edge: True while ball is near ankle
 
     def process_frame(self, frame: np.ndarray, t: float | None = None) -> dict:
         if t is None:
@@ -134,40 +134,40 @@ class JuggleSession:
             "count": self.count,
         }
 
-    # Primary detection: ball-to-ankle proximity (JuggleNet approach)
-    PROXIMITY_THRESH = 0.18  # 18% of frame — ball within this of ankle = touch
-    # Fallback: span-based arc detection (when pose not available)
+    PROXIMITY_THRESH = 0.18  # ball within 18% of frame height from ankle = contact zone
 
     def _detect_juggle(self):
-        """JuggleNet-inspired detection: proximity first, arc fallback.
+        """JuggleNet-inspired detection: proximity leading-edge + arc fallback.
 
-        Primary (proximity): if ball is within PROXIMITY_THRESH of an ankle = juggle.
-        Fallback (arc): span-based ball Y-max when no ankle data available.
+        Primary: fires once when ball ENTERS the ankle proximity zone (leading edge).
+           One physical touch = one entry event = one count, regardless of how many
+           frames the ball stays near the foot.
+        Fallback: span-based arc when no ankle detected recently.
         """
         if not self.history:
             return
 
         t_now = self.history[-1][2]
 
-        # ── Primary: ball-to-ankle proximity ───────────────────────────────────
-        if self.ankle_history:
-            last_ankle_t = self.ankle_history[-1][1]
-            # Only use ankle if detected recently (within 200ms)
-            if t_now - last_ankle_t < 0.20:
-                ankle_y = self.ankle_history[-1][0]
-                bx_norm, by_norm, _ = self.history[-1]
+        # ── Primary: leading-edge proximity detection ─────────────────────────
+        currently_in_prox = False
+        if self.ankle_history and t_now - self.ankle_history[-1][1] < 0.20:
+            ankle_y = self.ankle_history[-1][0]
+            _, by_norm, _ = self.history[-1]
+            currently_in_prox = abs(by_norm - ankle_y) < self.PROXIMITY_THRESH
 
-                # Ankle X is not tracked — use ball X as proxy (juggler's foot
-                # is always under the ball during contact)
-                # Distance in Y only is sufficient for typical camera angles
-                dy = abs(by_norm - ankle_y)
-                if dy < self.PROXIMITY_THRESH:
-                    if t_now - self.last_juggle_t >= self.COOLDOWN:
-                        self.count += 1
-                        self.last_juggle_t = t_now
-                    return
+        if currently_in_prox and not self.in_proximity:
+            # Leading edge: first frame ball enters contact zone
+            if t_now - self.last_juggle_t >= self.COOLDOWN:
+                self.count += 1
+                self.last_juggle_t = t_now
 
-        # ── Fallback: span-based arc detection ─────────────────────────────────
+        self.in_proximity = currently_in_prox
+
+        if currently_in_prox:
+            return  # proximity signal active — don't also run arc fallback
+
+        # ── Fallback: span-based arc detection (no pose available) ───────────
         n = len(self.history)
         if n >= 2 * self.SPAN + 1:
             i = n - self.SPAN - 1
