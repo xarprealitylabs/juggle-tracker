@@ -228,8 +228,8 @@ async def ws_endpoint(ws: WebSocket):
 MAX_DURATION_S = 30
 
 
-def _annotate_video_sync(in_path: str, out_path: str) -> int:
-    """Returns final juggle count."""
+def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> int:
+    """Returns final juggle count. If debug=True, draws full detection overlay."""
     t0 = time.monotonic()
     cap = cv2.VideoCapture(in_path)
     fps        = cap.get(cv2.CAP_PROP_FPS) or 15.0
@@ -238,27 +238,24 @@ def _annotate_video_sync(in_path: str, out_path: str) -> int:
     n_frames   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration_s = n_frames / fps
 
-    log.info("annotate: %.1fs video — %d frames @ %.1ffps (%dx%d)",
-             duration_s, n_frames, fps, w, h)
+    log.info("annotate%s: %.1fs video — %d frames @ %.1ffps (%dx%d)",
+             "[debug]" if debug else "", duration_s, n_frames, fps, w, h)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
-    font = cv2.FONT_HERSHEY_DUPLEX
+    font   = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Cap inference resolution at 640px — YOLO internally resizes anyway,
-    # doing it here avoids re-encoding the full-res frame multiple times.
     INFER_MAX = 640
-    scale = min(INFER_MAX / w, INFER_MAX / h, 1.0)
+    scale   = min(INFER_MAX / w, INFER_MAX / h, 1.0)
     infer_w = int(w * scale)
     infer_h = int(h * scale)
-    if scale < 1.0:
-        log.info("annotate: downscaling inference frames to %dx%d (%.0f%%)",
-                 infer_w, infer_h, scale * 100)
 
-    session = JuggleSession()
+    session   = JuggleSession()
     frame_idx = 0
     last_result: dict = {"bx": None, "by": None, "count": 0}
-    STEP = 2  # process every Nth frame — halves inference time
+    prev_count = 0
+    counted_flash = 0  # frames remaining to show COUNTED flash
+    STEP = 2
 
     while True:
         ret, frame = cap.read()
@@ -269,13 +266,53 @@ def _annotate_video_sync(in_path: str, out_path: str) -> int:
             infer_frame = cv2.resize(frame, (infer_w, infer_h)) if scale < 1.0 else frame
             last_result = session.process_frame(infer_frame, t=t)
         result = last_result
+
+        # ── Standard overlay (always) ──────────────────────────────────────
         if result["bx"] is not None:
             cx = int(result["bx"] * w)
             cy = int(result["by"] * h)
             cv2.circle(frame, (cx, cy), 28, (74, 222, 128), 3)
             cv2.circle(frame, (cx, cy), 5,  (74, 222, 128), -1)
-        cv2.putText(frame, str(result["count"]), (24, 80), font, 3,
-                    (74, 222, 128), 4, cv2.LINE_AA)
+
+        cv2.putText(frame, str(result["count"]), (24, 80),
+                    cv2.FONT_HERSHEY_DUPLEX, 3, (74, 222, 128), 4, cv2.LINE_AA)
+
+        # ── Debug overlay ──────────────────────────────────────────────────
+        if debug:
+            # Ankle horizontal line
+            if session.ankle_history:
+                ankle_y_norm = session.ankle_history[-1][0]
+                ay = int(ankle_y_norm * h)
+                cv2.line(frame, (0, ay), (w, ay), (0, 215, 255), 2)
+                cv2.putText(frame, f"ankle={ankle_y_norm:.3f}", (4, ay - 6),
+                            font, 0.5, (0, 215, 255), 1)
+
+                # Ball-to-ankle distance line and proximity indicator
+                if result["bx"] is not None:
+                    bx_px = int(result["bx"] * w)
+                    by_px = int(result["by"] * h)
+                    dist  = abs(result["by"] - ankle_y_norm)
+                    in_zone = dist < JuggleSession.PROXIMITY_THRESH
+                    lcolor  = (0, 255, 0) if in_zone else (60, 60, 255)
+                    cv2.line(frame, (bx_px, by_px), (bx_px, ay), lcolor, 2)
+                    cv2.putText(frame, f"d={dist:.3f} {'<IN>' if in_zone else ''}",
+                                (bx_px + 6, (by_px + ay) // 2), font, 0.45, lcolor, 1)
+
+            # Frame info
+            cv2.putText(frame, f"f{frame_idx} t={t:.2f}s", (4, h - 10),
+                        font, 0.4, (200, 200, 200), 1)
+
+            # COUNTED flash
+            if result["count"] > prev_count:
+                counted_flash = int(fps * 0.4)  # flash for 400ms
+            if counted_flash > 0:
+                cv2.rectangle(frame, (0, 0), (w, h), (0, 255, 0), 8)
+                cv2.putText(frame, f"COUNTED #{result['count']}",
+                            (w // 2 - 120, h // 2), cv2.FONT_HERSHEY_DUPLEX,
+                            1.8, (0, 255, 0), 3, cv2.LINE_AA)
+                counted_flash -= 1
+
+        prev_count = result["count"]
         writer.write(frame)
         frame_idx += 1
 
@@ -287,7 +324,7 @@ def _annotate_video_sync(in_path: str, out_path: str) -> int:
     writer.release()
     os.unlink(in_path)
 
-    elapsed = time.monotonic() - t0
+    elapsed     = time.monotonic() - t0
     final_count = result["count"]
     log.info("annotate: done in %.1fs — %d juggles detected", elapsed, final_count)
     return final_count
@@ -324,12 +361,60 @@ async def annotate_video(file: UploadFile = File(...)):
     out_path = in_path[:-len(suffix)] + "_annotated.mp4"
 
     loop = asyncio.get_running_loop()
-    final_count = await loop.run_in_executor(None, _annotate_video_sync, in_path, out_path)
+    final_count = await loop.run_in_executor(
+        None, _annotate_video_sync, in_path, out_path, False
+    )
 
     response = FileResponse(
         out_path,
         media_type="video/mp4",
         filename="juggle_annotated.mp4",
+        background=BackgroundTask(os.unlink, out_path),
+    )
+    response.headers["X-Juggle-Count"] = str(final_count)
+    return response
+
+
+@app.post("/annotate_debug")
+async def annotate_video_debug(file: UploadFile = File(...)):
+    """Same as /annotate but with full debug overlay:
+    - Ankle horizontal line (yellow)
+    - Ball-to-ankle distance line (green = in zone, red = out)
+    - 'COUNTED' flash on detection event
+    - Frame number, timestamp, distance values
+    """
+    raw = await file.read()
+    size_mb = len(raw) / 1_000_000
+    log.info("annotate_debug: %.1f MB (%s)", size_mb, file.filename)
+
+    suffix = os.path.splitext(file.filename or ".webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(raw)
+        in_path = f.name
+
+    cap = cv2.VideoCapture(in_path)
+    fps      = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    duration_s = n_frames / fps
+
+    if duration_s > MAX_DURATION_S:
+        os.unlink(in_path)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422,
+            detail=f"Vídeo demasiado longo ({duration_s:.0f}s). Máximo: {MAX_DURATION_S}s.")
+
+    out_path = in_path[:-len(suffix)] + "_debug.mp4"
+
+    loop = asyncio.get_running_loop()
+    final_count = await loop.run_in_executor(
+        None, _annotate_video_sync, in_path, out_path, True
+    )
+
+    response = FileResponse(
+        out_path,
+        media_type="video/mp4",
+        filename="juggle_debug.mp4",
         background=BackgroundTask(os.unlink, out_path),
     )
     response.headers["X-Juggle-Count"] = str(final_count)
