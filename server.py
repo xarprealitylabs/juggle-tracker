@@ -225,6 +225,16 @@ def _annotate_video_sync(in_path: str, out_path: str) -> int:
     writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
     font = cv2.FONT_HERSHEY_DUPLEX
 
+    # Cap inference resolution at 640px — YOLO internally resizes anyway,
+    # doing it here avoids re-encoding the full-res frame multiple times.
+    INFER_MAX = 640
+    scale = min(INFER_MAX / w, INFER_MAX / h, 1.0)
+    infer_w = int(w * scale)
+    infer_h = int(h * scale)
+    if scale < 1.0:
+        log.info("annotate: downscaling inference frames to %dx%d (%.0f%%)",
+                 infer_w, infer_h, scale * 100)
+
     session = JuggleSession()
     frame_idx = 0
     last_result: dict = {"bx": None, "by": None, "count": 0}
@@ -236,7 +246,8 @@ def _annotate_video_sync(in_path: str, out_path: str) -> int:
             break
         t = frame_idx / fps
         if frame_idx % STEP == 0:
-            last_result = session.process_frame(frame, t=t)
+            infer_frame = cv2.resize(frame, (infer_w, infer_h)) if scale < 1.0 else frame
+            last_result = session.process_frame(infer_frame, t=t)
         result = last_result
         if result["bx"] is not None:
             cx = int(result["bx"] * w)
