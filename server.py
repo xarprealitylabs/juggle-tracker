@@ -78,6 +78,8 @@ class JuggleSession:
         self.last_juggle_t = 0.0
         self.frames_no_ball = 0
         self.in_proximity = False   # leading-edge: True while ball is near ankle
+        self._last_pose = None
+        self._last_frame_shape = (480, 640)
 
     def process_frame(self, frame: np.ndarray, t: float | None = None) -> dict:
         if t is None:
@@ -127,6 +129,10 @@ class JuggleSession:
                 pass
 
         self._detect_juggle()
+
+        # Store last pose result for debug overlay (raw pixel coords)
+        self._last_pose = pose_results
+        self._last_frame_shape = (h, w)
 
         return {
             "bx": round(bx / w, 4) if bx is not None else None,
@@ -279,15 +285,44 @@ def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> in
 
         # ── Debug overlay ──────────────────────────────────────────────────
         if debug:
-            # Ankle horizontal line
+            # Draw ALL detected pose keypoints from the last inference
+            if session._last_pose and len(session._last_pose[0].keypoints) > 0:
+                try:
+                    kpts = session._last_pose[0].keypoints
+                    ih, iw = session._last_frame_shape
+                    # Scale from inference coords back to output coords
+                    sx, sy = w / iw, h / ih
+                    xy   = kpts.xy[0].cpu().numpy()
+                    conf = kpts.conf[0].cpu().numpy() if kpts.conf is not None else None
+
+                    # Named keypoints we care about: knees and ankles
+                    KP_NAMES = {13: "Lknee", 14: "Rknee", 15: "Lank", 16: "Rank"}
+                    for idx, kp_name in KP_NAMES.items():
+                        if idx >= len(xy):
+                            continue
+                        kx, ky = xy[idx]
+                        kc = float(conf[idx]) if conf is not None else 1.0
+                        if kc < 0.2 or (kx == 0 and ky == 0):
+                            continue
+                        px, py = int(kx * sx), int(ky * sy)
+                        is_ankle = idx in (15, 16)
+                        color = (0, 215, 255) if is_ankle else (180, 180, 0)
+                        shape = 8 if is_ankle else 5
+                        cv2.circle(frame, (px, py), shape, color, -1)
+                        cv2.putText(frame, f"{kp_name}({kc:.2f})",
+                                    (px + 6, py), font, 0.4, color, 1)
+                except Exception:
+                    pass
+
+            # Ankle horizontal line (used for detection)
             if session.ankle_history:
                 ankle_y_norm = session.ankle_history[-1][0]
                 ay = int(ankle_y_norm * h)
-                cv2.line(frame, (0, ay), (w, ay), (0, 215, 255), 2)
-                cv2.putText(frame, f"ankle={ankle_y_norm:.3f}", (4, ay - 6),
-                            font, 0.5, (0, 215, 255), 1)
+                cv2.line(frame, (0, ay), (w, ay), (0, 215, 255), 1)
+                cv2.putText(frame, f"ankle_y={ankle_y_norm:.3f}", (4, ay - 6),
+                            font, 0.4, (0, 215, 255), 1)
 
-                # Ball-to-ankle distance line and proximity indicator
+                # Ball-to-ankle distance line
                 if result["bx"] is not None:
                     bx_px = int(result["bx"] * w)
                     by_px = int(result["by"] * h)
@@ -295,8 +330,8 @@ def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> in
                     in_zone = dist < JuggleSession.PROXIMITY_THRESH
                     lcolor  = (0, 255, 0) if in_zone else (60, 60, 255)
                     cv2.line(frame, (bx_px, by_px), (bx_px, ay), lcolor, 2)
-                    cv2.putText(frame, f"d={dist:.3f} {'<IN>' if in_zone else ''}",
-                                (bx_px + 6, (by_px + ay) // 2), font, 0.45, lcolor, 1)
+                    cv2.putText(frame, f"d={dist:.3f}{'  IN' if in_zone else ''}",
+                                (bx_px + 6, (by_px + ay) // 2), font, 0.4, lcolor, 1)
 
             # Frame info
             cv2.putText(frame, f"f{frame_idx} t={t:.2f}s", (4, h - 10),
