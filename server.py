@@ -134,12 +134,40 @@ class JuggleSession:
             "count": self.count,
         }
 
-    def _detect_juggle(self):
-        """Two independent signals, shared cooldown prevents double-counting.
+    # Primary detection: ball-to-ankle proximity (JuggleNet approach)
+    PROXIMITY_THRESH = 0.18  # 18% of frame — ball within this of ankle = touch
+    # Fallback: span-based arc detection (when pose not available)
 
-        Signal 1 (ball): span-based local Y-max — ball at foot = max image Y.
-        Signal 2 (ankle): span-based local Y-min — foot at kick apex = min image Y.
+    def _detect_juggle(self):
+        """JuggleNet-inspired detection: proximity first, arc fallback.
+
+        Primary (proximity): if ball is within PROXIMITY_THRESH of an ankle = juggle.
+        Fallback (arc): span-based ball Y-max when no ankle data available.
         """
+        if not self.history:
+            return
+
+        t_now = self.history[-1][2]
+
+        # ── Primary: ball-to-ankle proximity ───────────────────────────────────
+        if self.ankle_history:
+            last_ankle_t = self.ankle_history[-1][1]
+            # Only use ankle if detected recently (within 200ms)
+            if t_now - last_ankle_t < 0.20:
+                ankle_y = self.ankle_history[-1][0]
+                bx_norm, by_norm, _ = self.history[-1]
+
+                # Ankle X is not tracked — use ball X as proxy (juggler's foot
+                # is always under the ball during contact)
+                # Distance in Y only is sufficient for typical camera angles
+                dy = abs(by_norm - ankle_y)
+                if dy < self.PROXIMITY_THRESH:
+                    if t_now - self.last_juggle_t >= self.COOLDOWN:
+                        self.count += 1
+                        self.last_juggle_t = t_now
+                    return
+
+        # ── Fallback: span-based arc detection ─────────────────────────────────
         n = len(self.history)
         if n >= 2 * self.SPAN + 1:
             i = n - self.SPAN - 1
@@ -151,20 +179,6 @@ class JuggleSession:
                     if t_i - self.last_juggle_t >= self.COOLDOWN:
                         self.count += 1
                         self.last_juggle_t = t_i
-                        return
-
-        m = len(self.ankle_history)
-        if m >= 2 * self.SPAN + 1:
-            j = m - self.SPAN - 1
-            y_j,      t_j      = self.ankle_history[j]
-            y_before, t_before = self.ankle_history[j - self.SPAN]
-            y_after,  _        = self.ankle_history[j + self.SPAN]
-            if t_j - t_before <= 1.0 and self.ankle_history[-1][1] - t_j <= 1.0:
-                # Local MIN in ankle Y = foot at highest point = kick
-                if y_before - y_j > self.ANKLE_PROM and y_after - y_j > self.ANKLE_PROM:
-                    if t_j - self.last_juggle_t >= self.COOLDOWN:
-                        self.count += 1
-                        self.last_juggle_t = t_j
 
 
 @app.websocket("/ws")
