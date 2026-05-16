@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -233,6 +234,30 @@ async def ws_endpoint(ws: WebSocket):
 
 MAX_DURATION_S = 30
 
+_ROTATE_MAP = {
+    90:  cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    -90: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
+
+def _video_rotation(path: str) -> int:
+    """Return rotation degrees from video metadata (0 if none or ffprobe unavailable)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        data = json.loads(r.stdout)
+        for stream in data.get("streams", []):
+            deg = int(stream.get("tags", {}).get("rotate", 0))
+            if deg:
+                return deg
+    except Exception as e:
+        log.debug("ffprobe rotation check skipped: %s", e)
+    return 0
+
 
 def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> int:
     """Returns final juggle count. If debug=True, draws full detection overlay."""
@@ -243,6 +268,13 @@ def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> in
     h          = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     n_frames   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration_s = n_frames / fps
+
+    # Detect and apply rotation (common for portrait phone videos)
+    rotation   = _video_rotation(in_path)
+    rotate_code = _ROTATE_MAP.get(rotation)
+    if rotate_code is not None and rotation in (90, 270, -90):
+        w, h = h, w   # dimensions swap for 90/270° rotations
+        log.info("annotate: rotating %d° → output %dx%d", rotation, w, h)
 
     log.info("annotate%s: %.1fs video — %d frames @ %.1ffps (%dx%d)",
              "[debug]" if debug else "", duration_s, n_frames, fps, w, h)
@@ -268,6 +300,8 @@ def _annotate_video_sync(in_path: str, out_path: str, debug: bool = False) -> in
         if not ret:
             break
         t = frame_idx / fps
+        if rotate_code is not None:
+            frame = cv2.rotate(frame, rotate_code)
         if frame_idx % STEP == 0:
             infer_frame = cv2.resize(frame, (infer_w, infer_h)) if scale < 1.0 else frame
             last_result = session.process_frame(infer_frame, t=t)
